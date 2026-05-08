@@ -1,0 +1,18 @@
+# To get started with Dependabot version updates, please see the documentation:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/.github"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "chore(ci)"

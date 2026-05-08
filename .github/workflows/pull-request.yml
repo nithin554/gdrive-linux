@@ -1,0 +1,223 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment
+        uses: ./.github/actions/setup-python-env
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Run Ruff linter
+        run: ruff check .
+
+      - name: Run Ruff format check
+        run: ruff format --check .
+
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment
+        uses: ./.github/actions/setup-python-env
+
+      - name: Install mypy
+        run: pip install mypy
+
+      - name: Run mypy
+        run: mypy --ignore-missing-imports main.py auth.py config.py sync_manager.py watchdog_handler.py sync_threads.py gui_elements.py
+
+  build-check:
+    name: Build Check (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: deb
+            os: ubuntu-latest
+            build-deb: "true"
+            build-rpm: "false"
+            build-arch: "false"
+            build-appimage: "true"
+          - label: rpm
+            os: ubuntu-latest
+            container: fedora:latest
+            build-deb: "false"
+            build-rpm: "true"
+            build-arch: "false"
+            build-appimage: "false"
+          - label: arch
+            os: ubuntu-latest
+            container: archlinux:latest
+            build-deb: "false"
+            build-rpm: "false"
+            build-arch: "true"
+            build-appimage: "false"
+    container: ${{ matrix.container }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment (deb)
+        if: matrix.label == 'deb'
+        uses: ./.github/actions/setup-python-env
+
+      - name: Install dependencies (rpm)
+        if: matrix.label == 'rpm'
+        shell: bash
+        run: |
+          dnf install -y python3 python3-pip python3-devel nodejs which binutils
+          python3 -m venv /opt/venv
+          PIP_CACHE_DIR=/tmp/pip-cache /opt/venv/bin/pip install -r requirements.txt
+          echo "/opt/venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies (arch)
+        if: matrix.label == 'arch'
+        shell: bash
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git python python-pip python-virtualenv nodejs wget sudo binutils fuse2
+          python -m venv /opt/venv
+          PIP_CACHE_DIR=/tmp/pip-cache /opt/venv/bin/pip install -r requirements.txt
+          echo "/opt/venv/bin" >> $GITHUB_PATH
+          # Create non-root user for makepkg
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builder:builder /opt/venv
+
+      - name: Build executable (arch)
+        if: matrix.label == 'arch'
+        shell: bash
+        run: |
+          chown -R builder:builder .
+          export GDRIVE_CLIENT_ID="${{ secrets.GDRIVE_CLIENT_ID }}"
+          export GDRIVE_CLIENT_SECRET="${{ secrets.GDRIVE_CLIENT_SECRET }}"
+          # Bake credentials into source so PyInstaller bundles them
+          sed -i "s/os.environ.get(\"GDRIVE_CLIENT_ID\", \"\")/os.environ.get(\"GDRIVE_CLIENT_ID\", \"${GDRIVE_CLIENT_ID}\")/" config.py
+          sed -i "s/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"\")/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"${GDRIVE_CLIENT_SECRET}\")/" config.py
+          sudo -u builder PATH="/opt/venv/bin:$PATH" /opt/venv/bin/pyinstaller --onefile --windowed --name gdrive-linux \
+            --hidden-import googleapiclient \
+            --hidden-import watchdog \
+            --hidden-import PyQt6 \
+            main.py
+
+      - name: Build executable (rpm)
+        if: matrix.label == 'rpm'
+        shell: bash
+        run: |
+          export GDRIVE_CLIENT_ID="${{ secrets.GDRIVE_CLIENT_ID }}"
+          export GDRIVE_CLIENT_SECRET="${{ secrets.GDRIVE_CLIENT_SECRET }}"
+          # Bake credentials into source so PyInstaller bundles them
+          sed -i "s/os.environ.get(\"GDRIVE_CLIENT_ID\", \"\")/os.environ.get(\"GDRIVE_CLIENT_ID\", \"${GDRIVE_CLIENT_ID}\")/" config.py
+          sed -i "s/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"\")/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"${GDRIVE_CLIENT_SECRET}\")/" config.py
+          PATH="/opt/venv/bin:$PATH" pyinstaller --onefile --windowed --name gdrive-linux \
+            --hidden-import googleapiclient \
+            --hidden-import watchdog \
+            --hidden-import PyQt6 \
+            main.py
+
+      - name: Build executable (deb)
+        if: matrix.label == 'deb'
+        run: |
+          export GDRIVE_CLIENT_ID="${{ secrets.GDRIVE_CLIENT_ID }}"
+          export GDRIVE_CLIENT_SECRET="${{ secrets.GDRIVE_CLIENT_SECRET }}"
+          # Bake credentials into source so PyInstaller bundles them
+          sed -i "s/os.environ.get(\"GDRIVE_CLIENT_ID\", \"\")/os.environ.get(\"GDRIVE_CLIENT_ID\", \"${GDRIVE_CLIENT_ID}\")/" config.py
+          sed -i "s/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"\")/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"${GDRIVE_CLIENT_SECRET}\")/" config.py
+          pyinstaller --onefile --windowed --name gdrive-linux \
+            --hidden-import googleapiclient \
+            --hidden-import watchdog \
+            --hidden-import PyQt6 \
+            main.py
+
+      - name: Install packaging tools (deb)
+        if: matrix.label == 'deb'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - name: Install packaging tools (rpm)
+        if: matrix.label == 'rpm'
+        shell: bash
+        run: dnf install -y rpm-build
+
+      - name: Package (${{ matrix.label }})
+        id: package
+        shell: bash
+        run: |
+          VERSION="0.0.0-pr-${{ github.event.pull_request.number }}"
+          ARTIFACT_DIR="dist/packages/gdrive-linux-${VERSION}"
+          mkdir -p "${ARTIFACT_DIR}"
+          chmod +x .github/scripts/*.sh
+          
+          if [[ "${{ matrix.build-deb }}" == "true" ]]; then
+            bash .github/scripts/package-deb.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          fi
+          if [[ "${{ matrix.build-rpm }}" == "true" ]]; then
+            bash .github/scripts/package-rpm.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          fi
+          if [[ "${{ matrix.build-arch }}" == "true" ]]; then
+            chown -R builder:builder .
+            sudo -u builder bash .github/scripts/package-arch.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          fi
+          if [[ "${{ matrix.build-appimage }}" == "true" ]]; then
+            bash .github/scripts/package-appimage.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          fi
+          echo "artifact-dir=${ARTIFACT_DIR}" >> $GITHUB_OUTPUT
+          ls -lh "${ARTIFACT_DIR}/"
+
+      - name: Verify artifacts
+        run: |
+          echo "## Build Artifacts (${{ matrix.label }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
+          
+          for f in ${{ steps.package.outputs.artifact-dir }}/*; do
+            SIZE=$(du -h "$f" | cut -f1)
+            echo "| $(basename "$f") | ${SIZE} |" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdrive-linux-pr-${{ github.event.pull_request.number }}-${{ matrix.label }}
+          path: ${{ steps.package.outputs.artifact-dir }}/
+          retention-days: 7
+
+  summary:
+    name: Summary
+    needs: [lint-python, type-check, build-check]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "## Pull Request Checks Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ needs.lint-python.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Type Check | ${{ needs.type-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build (deb + AppImage) | ${{ needs.build-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build (rpm) | ${{ needs.build-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build (arch) | ${{ needs.build-check.result }} |" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+*.so
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Google Drive app data (auto-generated in ~/.config/gdrive-linux/)
+token.json
+sync_mapping.json
+settings.json
+
+# Local sync folder (user data)
+my_gdrive_sync_folder/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / secret files (user-provided credentials)
+.env
+.env.*
+
+# Packaging artifacts
+*.deb
+*.rpm
+*.pkg.tar.zst
+*.AppImage
+*.tar.gz
+*.tar.zst

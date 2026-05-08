@@ -1,0 +1,140 @@
+name: "Build Application"
+description: "Builds the gdrive-linux application binary and packages it for all Linux distributions"
+
+inputs:
+  version:
+    description: "Version string for the packages"
+    required: false
+    default: "0.0.0"
+  build-deb:
+    description: "Build .deb package (Debian/Ubuntu)"
+    required: false
+    default: "true"
+  build-rpm:
+    description: "Build .rpm package (Fedora/RHEL)"
+    required: false
+    default: "true"
+  build-arch:
+    description: "Build Arch Linux package"
+    required: false
+    default: "true"
+  build-appimage:
+    description: "Build AppImage (universal)"
+    required: false
+    default: "true"
+  gdrive-client-id:
+    description: "Google OAuth client ID (from repo secret)"
+    required: false
+    default: ""
+  gdrive-client-secret:
+    description: "Google OAuth client secret (from repo secret)"
+    required: false
+    default: ""
+
+outputs:
+  artifact-dir:
+    description: "Directory containing all built packages"
+    value: ${{ steps.setup.outputs.artifact-dir }}
+  deb-path:
+    description: "Path to the built .deb package"
+    value: ${{ steps.build-packages.outputs.deb-path }}
+  rpm-path:
+    description: "Path to the built .rpm package"
+    value: ${{ steps.build-packages.outputs.rpm-path }}
+  arch-path:
+    description: "Path to the built Arch package"
+    value: ${{ steps.build-packages.outputs.arch-path }}
+  appimage-path:
+    description: "Path to the built AppImage"
+    value: ${{ steps.build-packages.outputs.appimage-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup output directory
+      id: setup
+      shell: bash
+      run: |
+        ARTIFACT_DIR="dist/packages/gdrive-linux-${{ inputs.version }}"
+        mkdir -p "${ARTIFACT_DIR}"
+        echo "artifact-dir=${ARTIFACT_DIR}" >> $GITHUB_OUTPUT
+        echo "ARTIFACT_DIR=${ARTIFACT_DIR}" >> $GITHUB_ENV
+
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y rpm
+
+    - name: Build executable with PyInstaller
+      shell: bash
+      run: |
+        # Override OAuth credentials at build time (from GitHub repo secrets)
+        if [[ -n "${{ inputs.gdrive-client-id }}" ]]; then
+          export GDRIVE_CLIENT_ID="${{ inputs.gdrive-client-id }}"
+        fi
+        if [[ -n "${{ inputs.gdrive-client-secret }}" ]]; then
+          export GDRIVE_CLIENT_SECRET="${{ inputs.gdrive-client-secret }}"
+        fi
+        # Bake credentials into source so PyInstaller bundles them
+        sed -i "s/os.environ.get(\"GDRIVE_CLIENT_ID\", \"\")/os.environ.get(\"GDRIVE_CLIENT_ID\", \"${GDRIVE_CLIENT_ID}\")/" config.py
+        sed -i "s/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"\")/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"${GDRIVE_CLIENT_SECRET}\")/" config.py
+        pyinstaller --onefile --windowed --name gdrive-linux \
+          --hidden-import googleapiclient \
+          --hidden-import watchdog \
+          --hidden-import PyQt6 \
+          main.py
+        # Verify binary exists and is executable
+        ls -lh dist/gdrive-linux
+        file dist/gdrive-linux
+
+    - name: Build all packages
+      id: build-packages
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
+        
+        chmod +x .github/scripts/*.sh
+
+        # .deb
+        if [[ "${{ inputs.build-deb }}" == "true" ]]; then
+          echo "Building .deb package..."
+          bash .github/scripts/package-deb.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          DEB_PATH=$(ls "${ARTIFACT_DIR}"/*.deb | head -1)
+          echo "deb-path=${DEB_PATH}" >> $GITHUB_OUTPUT
+        fi
+
+        # .rpm
+        if [[ "${{ inputs.build-rpm }}" == "true" ]]; then
+          echo "Building .rpm package..."
+          bash .github/scripts/package-rpm.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          RPM_PATH=$(ls "${ARTIFACT_DIR}"/*.rpm | head -1)
+          echo "rpm-path=${RPM_PATH}" >> $GITHUB_OUTPUT
+        fi
+
+        # Arch Linux
+        if [[ "${{ inputs.build-arch }}" == "true" ]]; then
+          echo "Building Arch Linux package..."
+          # Arch packaging needs base-devel; skip if makepkg not available
+          if command -v makepkg &> /dev/null; then
+            bash .github/scripts/package-arch.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+            ARCH_PATH=$(ls "${ARTIFACT_DIR}"/*.pkg.tar.zst 2>/dev/null | head -1 || echo "")
+            if [ -n "${ARCH_PATH}" ]; then
+              echo "arch-path=${ARCH_PATH}" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "makepkg not available, skipping Arch package. (Expected on non-Arch runners)"
+          fi
+        fi
+
+        # AppImage
+        if [[ "${{ inputs.build-appimage }}" == "true" ]]; then
+          echo "Building AppImage..."
+          bash .github/scripts/package-appimage.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
+          APPIMAGE_PATH=$(ls "${ARTIFACT_DIR}"/*.AppImage | head -1)
+          echo "appimage-path=${APPIMAGE_PATH}" >> $GITHUB_OUTPUT
+        fi
+
+        echo "All packages built in ${ARTIFACT_DIR}:"
+        ls -lh "${ARTIFACT_DIR}/"
