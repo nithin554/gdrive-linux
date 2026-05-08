@@ -1,0 +1,49 @@
+name: "Setup Python Environment"
+description: "Sets up Python with caching and installs project dependencies"
+
+inputs:
+  python-version:
+    description: "Python version to use"
+    required: false
+    default: "3.12"
+  gdrive-client-id:
+    description: "Google OAuth client ID (from repo secret)"
+    required: false
+    default: ""
+  gdrive-client-secret:
+    description: "Google OAuth client secret (from repo secret)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'pip'
+
+    - name: Install system dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfuse2 patchelf binutils
+
+    - name: Upgrade pip
+      shell: bash
+      run: pip install --upgrade pip
+
+    - name: Install project dependencies
+      shell: bash
+      run: pip install -r requirements.txt
+
+    - name: Inject OAuth credentials
+      shell: bash
+      run: |
+        if [[ -n "${{ inputs.gdrive-client-id }}" ]]; then
+          echo "GDRIVE_CLIENT_ID=${{ inputs.gdrive-client-id }}" >> $GITHUB_ENV
+        fi
+        if [[ -n "${{ inputs.gdrive-client-secret }}" ]]; then
+          echo "GDRIVE_CLIENT_SECRET=${{ inputs.gdrive-client-secret }}" >> $GITHUB_ENV
+        fi
