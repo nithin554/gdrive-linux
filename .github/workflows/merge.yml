@@ -213,6 +213,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [create-release, build-ubuntu, build-arch]
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
+
       - name: Download Ubuntu artifacts
         uses: actions/download-artifact@v4
         with:

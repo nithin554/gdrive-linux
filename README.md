@@ -1,8 +1,8 @@
 # gdrive-linux
 
 **Native Google Drive network drive for Linux** — mounts your Google Drive as a
-FUSE virtual filesystem at `~/Gdrive`. Pure streaming architecture: zero local
-storage, files are streamed from Drive on read and uploaded on close.
+FUSE virtual filesystem at `~/Google Drive (<email>)`. Pure streaming architecture:
+zero local storage, files are streamed from Drive on read and uploaded on close.
 
 [![Pull Request Checks](https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml/badge.svg)](https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml)
 [![Build and Release](https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml/badge.svg)](https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml)
@@ -10,7 +10,7 @@ storage, files are streamed from Drive on read and uploaded on close.
 
 ## Features
 
-- **True network drive** — FUSE virtual filesystem mounted at `~/Gdrive`, accessible to all apps
+- **True network drive** — FUSE virtual filesystem mounted at `~/Google Drive (<email>)`, accessible to all apps
 - **Pure streaming** — `read()` streams from Drive API into memory; `write()` buffers in memory, uploads on close. **Nothing stored on disk**
 - **No placeholder files** — no cache files, no downloads, no rollback logic
 - **Instant listing** — `ls` / file manager / `stat` are metadata-only, zero network
@@ -21,15 +21,17 @@ storage, files are streamed from Drive on read and uploaded on close.
 - **Delete protection** — delete operations are blocked with a notification to prevent accidental permanent deletion
 - **FUSE mount verification** — detects stale mounts, leftover real directories, and failed mounts with user notification
 - **Account switching** — log out and log in with a different Google account without restarting
+- **Reset All Data** — clear cache, mapping, and authentication all at once from the tray menu or settings
 - **Cross-distro packages** — `.deb`, `.rpm`, `.pkg.tar.zst`, and universal AppImage
 
 ## How It Works
 
-gdrive-linux mounts a **FUSE virtual filesystem** at `~/Gdrive` that presents
+gdrive-linux mounts a **FUSE virtual filesystem** at `~/Google Drive (<email>)` that presents
 your Google Drive as a regular network drive — but **no file content is ever
 stored on your disk**. Every `read()` streams data directly from the Drive API
 over HTTP, and every `write()` is held in memory and uploaded to Drive when
-the file is closed.
+the file is closed. The mount point includes your Google account email (e.g.
+`~/Google Drive (user@gmail.com)`), so multiple accounts can coexist.
 
 ```
 User / app reads file content
@@ -125,7 +127,7 @@ On first run, your browser will open for Google account authentication. A `token
 1. **Launch the application** — it authenticates with Google Drive and mounts the network drive automatically
 2. The application immediately:
    - Scans your Google Drive and builds a file index
-   - Mounts the FUSE virtual filesystem at `~/Gdrive`
+   - Mounts the FUSE virtual filesystem at `~/Google Drive (<email>)`
    - Files appear instantly with real sizes — **zero bytes stored locally**
    - Open or read a file — content streams from Drive into memory on demand
    - File manager scans and `ls` commands do **not** trigger any network calls
@@ -134,7 +136,8 @@ On first run, your browser will open for Google account authentication. A `token
 4. **Right-click the tray icon** to:
    - View your signed-in Google account email
    - Open the network drive in your file manager
-   - Open settings (where you can log out / switch accounts, trigger manual sync, or toggle autostart)
+   - Open settings (where you can log out / switch accounts, trigger manual sync, toggle autostart, or reset all data)
+   - Reset all data (clears cache, sync mapping, and authentication — logs you out)
    - Quit the application
 
 ## Configuration
@@ -145,6 +148,9 @@ Auto-generated files in `~/.config/gdrive-linux/`:
 |------|---------|
 | `token.json` | User's Google OAuth token |
 | `sync_mapping.json` | Local path ↔ Drive file ID mapping |
+| `settings.json` | Application preferences (autostart, etc.) |
+
+Cache directory at `~/.cache/gdrive-linux/cache/` stores recently accessed file chunks for fast re-reads — automatically managed with LRU eviction.
 
 Environment variables:
 
@@ -155,6 +161,10 @@ Environment variables:
 
 Edit `config.py` to customize defaults:
 - `REMOTE_SYNC_INTERVAL_SECONDS` — how often to check Drive for changes (default: 60s)
+- `CACHE_CHUNK_SIZE` — size of each disk cache chunk (default: 4 MB)
+- `CACHE_SIZE_LIMIT` — max disk cache size (default: 2 GB)
+- `READAHEAD_WINDOW_CHUNKS` — number of chunks to fetch on cache miss (default: 4, i.e. 16 MB)
+- `MAX_CONCURRENT_FETCHES` — max concurrent Drive API read requests (default: 3)
 
 ## Project Structure
 
@@ -168,6 +178,8 @@ gdrive-linux/
 ├── sync_threads.py       # Background remote sync thread
 ├── gui_elements.py       # GUI components (SettingsWindow, SystemTrayIcon)
 ├── autostart.py          # XDG autostart .desktop file management
+├── disk_cache.py         # LRU disk cache for file chunks
+├── drive_service_pool.py # Thread-local Drive service instances for parallel reads
 ├── watchdog_handler.py   # Deprecated — kept for reference
 ├── requirements.txt      # Python dependencies
 ├── icons/                # Application icons
