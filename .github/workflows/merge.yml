@@ -4,18 +4,6 @@ on:
   push:
     branches:
       - "main"
-      - "master"
-  workflow_dispatch:
-    inputs:
-      increment:
-        description: "Version increment type"
-        required: true
-        default: "patch"
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
 
 permissions:
   contents: write
@@ -57,11 +45,11 @@ jobs:
         id: tag
         shell: bash
         run: |
-          git fetch --tags
+          git fetch --tags origin '+refs/heads/main:refs/remotes/origin/main'
           COMMIT_SHA=$(git rev-parse HEAD)
 
-          # Get the latest tag across all branches
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | head -1)
+          # Get the latest tag on main branch only
+          PREVIOUS_TAG=$(git tag --merged origin/main --sort=-version:refname | head -1)
 
           if [ -z "$PREVIOUS_TAG" ]; then
             PREVIOUS_TAG="0.0.0"
@@ -84,7 +72,7 @@ jobs:
         id: notes
         shell: bash
         run: |
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
+          PREVIOUS_TAG=$(git tag --merged origin/main --sort=-version:refname | head -2 | tail -1)
           if [ -z "$PREVIOUS_TAG" ]; then
             echo "notes=Initial release of gdrive-linux" >> $GITHUB_OUTPUT
           else
