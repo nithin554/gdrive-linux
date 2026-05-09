@@ -210,9 +210,25 @@ jobs:
           path: ${{ steps.package.outputs.artifact-dir }}/
           retention-days: 7
 
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment
+        uses: ./.github/actions/setup-python-env
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v --tb=short
+
   summary:
     name: Summary
-    needs: [lint-python, type-check, build-check]
+    needs: [lint-python, type-check, unit-tests, build-check]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -224,6 +240,7 @@ jobs:
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Lint | ${{ needs.lint-python.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Type Check | ${{ needs.type-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build (deb + AppImage) | ${{ needs.build-check.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build (rpm) | ${{ needs.build-check.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build (arch) | ${{ needs.build-check.result }} |" >> $GITHUB_STEP_SUMMARY
