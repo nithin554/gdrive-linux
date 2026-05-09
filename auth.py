@@ -31,21 +31,46 @@ def authenticate_google_drive():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            client_config = {
-                "installed": {
-                    "client_id": CLIENT_ID,
-                    "client_secret": CLIENT_SECRET,
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                    "redirect_uris": ["http://localhost"],
-                }
-            }
-            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = _run_oauth_flow()
+        if creds:
+            with open(TOKEN_FILE, "w") as token:
+                token.write(creds.to_json())
+    return creds
+
+
+def reauthenticate_google_drive():
+    """Force a fresh OAuth flow, replacing any existing token.
+
+    This is used for switching Google accounts — deletes the old token
+    and runs a new OAuth flow. Returns the new credentials or None on failure.
+    """
+    # Remove old token first
+    if os.path.exists(TOKEN_FILE):
+        os.remove(TOKEN_FILE)
+        logging.info("Old token deleted for re-authentication.")
+
+    creds = _run_oauth_flow()
+    if creds:
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
+        logging.info("New token saved after re-authentication.")
     return creds
+
+
+def _run_oauth_flow():
+    """Run the OAuth local server flow and return credentials."""
+    client_config = {
+        "installed": {
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+    return flow.run_local_server(port=0)
 
 
 def get_user_email(creds):

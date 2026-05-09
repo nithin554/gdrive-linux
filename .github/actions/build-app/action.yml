@@ -82,6 +82,7 @@ runs:
         pyinstaller --onefile --windowed --name gdrive-linux \
           --hidden-import googleapiclient \
           --hidden-import watchdog \
+          --hidden-import fuse \
           --hidden-import PyQt6 \
           main.py
         # Verify binary exists and is executable

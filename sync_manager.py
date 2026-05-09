@@ -3,7 +3,7 @@ import time
 import logging
 import json
 import io
-import shutil
+import threading
 
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
@@ -11,7 +11,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from config import (
     LOCAL_SYNC_FOLDER,
     MAPPING_FILE,
-    DEFAULT_FILE_MODE,  # Needed for initial sync to get startPageToken
+    DEFAULT_FILE_MODE,
 )
 
 # --- Conflict resolution strategy ---
@@ -24,20 +24,34 @@ CONFLICT_SUFFIX = ".gdrive-conflict"
 class SyncManager:
     def __init__(self, drive_service):
         self.drive_service = drive_service
-        # Maps local_path -> {'id': drive_id, 'mode': 'local'/'online', 'mimeType': '...', 'size': '...', 'last_accessed_time': timestamp}
+        # Maps local_path -> {id, mode, mimeType, size, last_accessed_time}
         self.local_file_info = {}
         self.drive_id_to_local_path = {}  # Maps drive_id -> local_path
-        self.last_change_token = (
-            None  # Stores the last page token for Drive Changes API
-        )
-        self._sync_in_progress_files = (
-            set()
-        )  # Paths of files/folders currently being manipulated by SyncManager
+        self.last_change_token = None  # Stores Drive Changes API page token
+        # Paths currently being manipulated by SyncManager
+        self._sync_in_progress_files = set()
+        # Lock for thread-safe access to mapping data from FUSE and sync threads
+        self._mapping_lock = threading.Lock()
+        # Lock for serialising all Drive API HTTP calls.
+        # ``drive_service._http`` is NOT thread-safe — concurrent calls from
+        # FUSE threads and the remote sync thread cause SSL corruption and
+        # segfaults. Acquire this lock before any execute() or next_chunk().
+        #
+        # Must be RLock (reentrant) because ``_get_drive_folder_id()`` acquires
+        # this lock internally, and several callers (create_folder, upload_file,
+        # move_item, fuse_drive.create) also acquire it — the lock must support
+        # recursive acquisition by the same thread to avoid deadlock.
+        self._drive_api_lock = threading.RLock()
         self._load_mapping()
         logging.info("SyncManager initialized and mapping loaded.")
 
     def _load_mapping(self):
-        """Loads the mapping from a JSON file."""
+        """Loads the mapping from a JSON file.
+
+        Also migrates any relative paths to absolute paths under
+        LOCAL_SYNC_FOLDER, so the mapping is always consistent with the
+        current FUSE mount point.
+        """
         if os.path.exists(MAPPING_FILE):
             with open(MAPPING_FILE, "r") as f:
                 try:
@@ -45,6 +59,47 @@ class SyncManager:
                     self.local_file_info = data.get("local_file_info", {})
                     self.drive_id_to_local_path = data.get("drive_id_to_local_path", {})
                     self.last_change_token = data.get("last_change_token", None)
+
+                    # --- Path migration -------------------------------------------------
+                    # If the mapping contains relative paths (e.g. from an older version
+                    # where LOCAL_SYNC_FOLDER was just a folder name), rewrite them to
+                    # absolute paths under the current LOCAL_SYNC_FOLDER.
+                    if self.local_file_info:
+                        sample_key = next(iter(self.local_file_info))
+                        if not sample_key.startswith(LOCAL_SYNC_FOLDER + os.sep):
+                            logging.info(
+                                "Migrating mapping paths from relative to absolute "
+                                "(prefix: '%s' -> '%s').",
+                                sample_key.split(os.sep)[0],
+                                LOCAL_SYNC_FOLDER,
+                            )
+                            new_file_info = {}
+                            new_drive_map = {}
+                            # Detect the old prefix (first component of the rel path)
+                            old_prefix = sample_key.split(os.sep)[0]
+                            for path, info in self.local_file_info.items():
+                                if path.startswith(old_prefix):
+                                    new_path = os.path.join(
+                                        LOCAL_SYNC_FOLDER,
+                                        path[len(old_prefix) + 1 :],
+                                    )
+                                else:
+                                    new_path = path
+                                new_file_info[new_path] = info
+                            for drive_id, path in self.drive_id_to_local_path.items():
+                                if path.startswith(old_prefix):
+                                    new_path = os.path.join(
+                                        LOCAL_SYNC_FOLDER,
+                                        path[len(old_prefix) + 1 :],
+                                    )
+                                else:
+                                    new_path = path
+                                new_drive_map[drive_id] = new_path
+                            self.local_file_info = new_file_info
+                            self.drive_id_to_local_path = new_drive_map
+                            self._save_mapping()
+                    # --------------------------------------------------------------------
+
                     logging.info(
                         f"Loaded {len(self.local_file_info)} items from {MAPPING_FILE}"
                     )
@@ -85,7 +140,7 @@ class SyncManager:
                 f,
                 indent=4,
             )
-        logging.info(f"Saved mapping to {MAPPING_FILE}")
+        logging.debug("Saved mapping (%d items).", len(self.local_file_info))
 
     def is_path_in_sync_progress(self, path):
         """Checks if a given path is currently being manipulated by the SyncManager."""
@@ -150,16 +205,15 @@ class SyncManager:
                     "parents": [current_drive_parent_id],
                 }
                 try:
-                    # Add to ignore list before creating local folder
+                    # Add to ignore list before creating folder on Drive
                     self._sync_in_progress_files.add(current_local_folder_path)
-                    if not os.path.exists(current_local_folder_path):
-                        os.makedirs(current_local_folder_path)
 
-                    folder = (
-                        self.drive_service.files()
-                        .create(body=folder_metadata, fields="id, name, parents")
-                        .execute()
-                    )
+                    with self._drive_api_lock:
+                        folder = (
+                            self.drive_service.files()
+                            .create(body=folder_metadata, fields="id, name, parents")
+                            .execute()
+                        )
 
                     drive_folder_id = folder.get("id")
                     self.local_file_info[current_local_folder_path] = {
@@ -207,15 +261,16 @@ class SyncManager:
                 local_file_path, mimetype="application/octet-stream"
             )
 
-            file = (
-                self.drive_service.files()
-                .create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields="id, name, parents, mimeType, size",
+            with self._drive_api_lock:
+                file = (
+                    self.drive_service.files()
+                    .create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields="id, name, parents, mimeType, size",
+                    )
+                    .execute()
                 )
-                .execute()
-            )
 
             drive_file_id = file.get("id")
             self.local_file_info[local_file_path] = {
@@ -262,15 +317,16 @@ class SyncManager:
             media = MediaFileUpload(
                 local_file_path, mimetype="application/octet-stream"
             )
-            updated_file = (
-                self.drive_service.files()
-                .update(
-                    fileId=drive_file_id,
-                    media_body=media,
-                    fields="id, name, mimeType, size",
+            with self._drive_api_lock:
+                updated_file = (
+                    self.drive_service.files()
+                    .update(
+                        fileId=drive_file_id,
+                        media_body=media,
+                        fields="id, name, mimeType, size",
+                    )
+                    .execute()
                 )
-                .execute()
-            )
 
             # Update metadata in mapping
             if isinstance(
@@ -319,10 +375,10 @@ class SyncManager:
         try:
             # Add to ignore list before deleting local file
             self._sync_in_progress_files.add(local_file_path)
-            if os.path.exists(local_file_path):
-                os.remove(local_file_path)
-
-            self.drive_service.files().delete(fileId=drive_file_id).execute()
+            # Pure streaming mode — no local file to delete from disk.
+            # Just remove from Drive and mapping.
+            with self._drive_api_lock:
+                self.drive_service.files().delete(fileId=drive_file_id).execute()
 
             del self.local_file_info[local_file_path]
             if drive_file_id in self.drive_id_to_local_path:  # Check before deleting
@@ -368,16 +424,17 @@ class SyncManager:
                 "mimeType": "application/vnd.google-apps.folder",
                 "parents": [parent_id],
             }
-            # Add to ignore list before creating local folder
+            # Add to ignore list before creating folder on Drive
             self._sync_in_progress_files.add(local_folder_path)
-            if not os.path.exists(local_folder_path):
-                os.makedirs(local_folder_path)
 
-            folder = (
-                self.drive_service.files()
-                .create(body=file_metadata, fields="id, name, parents, mimeType, size")
-                .execute()
-            )
+            with self._drive_api_lock:
+                folder = (
+                    self.drive_service.files()
+                    .create(
+                        body=file_metadata, fields="id, name, parents, mimeType, size"
+                    )
+                    .execute()
+                )
 
             drive_folder_id = folder.get("id")
             self.local_file_info[local_folder_path] = {
@@ -423,12 +480,10 @@ class SyncManager:
         try:
             # Add to ignore list before deleting local folder
             self._sync_in_progress_files.add(local_folder_path)
-            if os.path.exists(local_folder_path):
-                shutil.rmtree(
-                    local_folder_path
-                )  # Use shutil.rmtree for non-empty directories
-
-            self.drive_service.files().delete(fileId=drive_folder_id).execute()
+            # Pure streaming mode — no local folder to delete from disk.
+            # Just remove from Drive and mapping.
+            with self._drive_api_lock:
+                self.drive_service.files().delete(fileId=drive_folder_id).execute()
             # Recursively remove all children from mapping as well
             items_to_delete = [
                 lp for lp in self.local_file_info if lp.startswith(local_folder_path)
@@ -501,11 +556,12 @@ class SyncManager:
                 return False  # Return False for consistency
 
             # Get current parents of the item on Drive
-            current_file_info = (
-                self.drive_service.files()
-                .get(fileId=drive_file_id, fields="parents")
-                .execute()
-            )
+            with self._drive_api_lock:
+                current_file_info = (
+                    self.drive_service.files()
+                    .get(fileId=drive_file_id, fields="parents")
+                    .execute()
+                )
             old_parents = current_file_info.get("parents", [])
             old_parent_drive_id = (
                 old_parents[0] if old_parents else None
@@ -523,13 +579,14 @@ class SyncManager:
                         old_parent_drive_id
                     )  # Explicitly cast to str
 
-            self.drive_service.files().update(
-                fileId=drive_file_id, body=update_body, fields="id, name, parents"
-            ).execute()
+            with self._drive_api_lock:
+                self.drive_service.files().update(
+                    fileId=drive_file_id, body=update_body, fields="id, name, parents"
+                ).execute()
 
-            # Perform local move/rename
-            if os.path.exists(src_local_path):
-                shutil.move(src_local_path, dest_local_path)
+            # In pure streaming mode, no local files exist on disk to move.
+            # The mapping update below is sufficient — FUSE will serve the
+            # renamed path from the updated mapping.
 
             # Update mapping for the moved item and its children if it's a folder
             old_info = self.local_file_info.pop(src_local_path)
@@ -580,52 +637,38 @@ class SyncManager:
     def _has_local_changes_since(self, local_path: str, ref_time: float) -> bool:
         """Check if a local file has been modified since the given reference time.
 
-        Uses mtime to detect changes. Returns True if the file was modified
-        after *ref_time*, or if we can't determine.
+        In pure streaming mode, files only exist on Drive, never locally on disk.
+        This always returns False — there are no local files to have changes.
         """
-        try:
-            if not os.path.exists(local_path):
-                return False
-            mtime = os.path.getmtime(local_path)
-            # Add a small tolerance (2 seconds) for filesystem timestamp granularity
-            return mtime > ref_time + 2
-        except OSError:
-            return False
+        return False
 
     def _backup_local_file(self, local_path: str):
         """Back up a local file before overwriting it due to a conflict.
 
-        Returns the backup path, or None on failure.
+        In pure streaming mode, files only exist on Drive, never locally on disk.
+        This always returns None — there is nothing to back up.
         """
-        if not os.path.exists(local_path):
-            return None
-        try:
-            timestamp = int(time.time())
-            backup_name = (
-                f"{CONFLICT_SUFFIX}.{os.path.basename(local_path)}.{timestamp}"
-            )
-            backup_path = os.path.join(os.path.dirname(local_path), backup_name)
-            shutil.copy2(local_path, backup_path)
-            logging.info(
-                "Backed up local changes to %s (conflict resolution)", backup_path
-            )
-            return backup_path
-        except Exception as e:
-            logging.error("Failed to back up local file %s: %s", local_path, e)
-            return None
+        return None
 
     def download_file(self, drive_file_id, local_file_path):
-        """Downloads a file from Google Drive."""
+        """Downloads a file from Google Drive to the local cache.
+
+        *local_file_path* is the destination path. When using FUSE, this
+        should be a path inside FUSE_CACHE_DIR (typically the cache path).
+        """
         try:
-            # Add to ignore list before writing to local file
+            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+            # Add to ignore list before writing
             self._sync_in_progress_files.add(local_file_path)
-            request = self.drive_service.files().get_media(fileId=drive_file_id)
+            with self._drive_api_lock:
+                request = self.drive_service.files().get_media(fileId=drive_file_id)
             fh = io.FileIO(local_file_path, "wb")
             downloader = MediaIoBaseDownload(fh, request)
             done = False
 
             while done is False:
-                status, done = downloader.next_chunk()
+                with self._drive_api_lock:
+                    status, done = downloader.next_chunk()
                 logging.debug(
                     f"Download progress for {os.path.basename(local_file_path)}: {int(status.progress() * 100)}%."
                 )
@@ -657,7 +700,8 @@ class SyncManager:
 
         # Get the current startPageToken before processing changes
         try:
-            response = self.drive_service.changes().getStartPageToken().execute()
+            with self._drive_api_lock:
+                response = self.drive_service.changes().getStartPageToken().execute()
             self.last_change_token = response.get("startPageToken")
             logging.info(f"Initial startPageToken obtained: {self.last_change_token}")
         except HttpError as error:
@@ -680,11 +724,14 @@ class SyncManager:
         page_token = None
         while True:
             try:
-                response = (
-                    self.drive_service.files()
-                    .list(q=query, spaces="drive", fields=fields, pageToken=page_token)
-                    .execute()
-                )
+                with self._drive_api_lock:
+                    response = (
+                        self.drive_service.files()
+                        .list(
+                            q=query, spaces="drive", fields=fields, pageToken=page_token
+                        )
+                        .execute()
+                    )
 
                 for item in response.get("files", []):
                     drive_id = item["id"]
@@ -717,11 +764,9 @@ class SyncManager:
                         )  # Add to ignore list
 
                         if mime_type == "application/vnd.google-apps.folder":
-                            # It's a folder
-                            if not os.path.exists(local_path):
-                                os.makedirs(local_path)
-                                logging.info(f"Created local folder: {local_path}")
-
+                            # Folder — pure streaming mode: no real directories created.
+                            # FUSE will serve directory listings via readdir() using
+                            # the mapping metadata. No os.makedirs() here.
                             self.local_file_info[local_path] = {
                                 "id": drive_id,
                                 "mode": "local",  # Folders are always "local"
@@ -732,73 +777,22 @@ class SyncManager:
                             drive_id_to_local_folder_path[drive_id] = (
                                 local_path  # Add to folder path mapping
                             )
-                            self._save_mapping()  # Save after each folder creation
-
                         else:
-                            # It's a file
-                            # Decide whether to download content or create placeholder based on DEFAULT_FILE_MODE
-                            file_mode = DEFAULT_FILE_MODE
-
-                            if (
-                                not os.path.exists(local_path)
-                                or self.local_file_info.get(local_path, {}).get("id")
-                                != drive_id
-                            ):
-                                # If file doesn't exist locally or is a different file
-                                if file_mode == "local":
-                                    logging.info(
-                                        f"Downloading file '{name}' (ID: {drive_id}) to {local_path}"
-                                    )
-                                    if self.download_file(drive_id, local_path):
-                                        self.local_file_info[local_path] = {
-                                            "id": drive_id,
-                                            "mode": file_mode,
-                                            "mimeType": mime_type,
-                                            "size": size,
-                                            "last_accessed_time": time.time(),  # Set access time on download
-                                        }
-                                        self.drive_id_to_local_path[drive_id] = (
-                                            local_path
-                                        )
-                                        self._save_mapping()
-                                elif file_mode == "online":
-                                    logging.info(
-                                        f"Creating placeholder for file '{name}' (ID: {drive_id}) at {local_path}"
-                                    )
-                                    # Create an empty file as a placeholder
-                                    os.makedirs(
-                                        os.path.dirname(local_path), exist_ok=True
-                                    )
-                                    with open(local_path, "w"):
-                                        pass
-                                    self.local_file_info[local_path] = {
-                                        "id": drive_id,
-                                        "mode": file_mode,
-                                        "mimeType": mime_type,
-                                        "size": size,
-                                        "last_accessed_time": 0,  # Not accessed yet
-                                    }
-                                    self.drive_id_to_local_path[drive_id] = local_path
-                                    self._save_mapping()
-                            else:
-                                logging.info(
-                                    f"File '{name}' already exists locally and mapped. Skipping download/placeholder creation."
-                                )
-                                # Ensure metadata is up-to-date even if not downloaded
-                                self.local_file_info[local_path].update(
-                                    {"mimeType": mime_type, "size": size}
-                                )
-                                # Update last_accessed_time if it's a local file
-                                if (
-                                    self.local_file_info[local_path].get("mode")
-                                    == "local"
-                                ):
-                                    self.local_file_info[local_path][
-                                        "last_accessed_time"
-                                    ] = time.time()
-                                self._save_mapping()
+                            # It's a file — with FUSE, just populate the mapping.
+                            # No placeholder files are created on disk.
+                            self.local_file_info[local_path] = {
+                                "id": drive_id,
+                                "mode": DEFAULT_FILE_MODE,
+                                "mimeType": mime_type,
+                                "size": size,
+                                "last_accessed_time": 0,  # Not accessed yet
+                            }
+                            self.drive_id_to_local_path[drive_id] = local_path
                     finally:
                         self._sync_in_progress_files.discard(local_path)
+
+                # Batch-save after processing all items in this page
+                self._save_mapping()
 
                 page_token = response.get("nextPageToken", None)
                 if not page_token:
@@ -830,16 +824,21 @@ class SyncManager:
         page_token = self.last_change_token
         while True:
             try:
-                response = (
-                    self.drive_service.changes()
-                    .list(
-                        pageToken=page_token,
-                        spaces="drive",
-                        fields="nextPageToken, newStartPageToken, changes(fileId, file(id, name, mimeType, parents, trashed, size))",
-                        # Request size
+                with self._drive_api_lock:
+                    response = (
+                        self.drive_service.changes()
+                        .list(
+                            pageToken=page_token,
+                            spaces="drive",
+                            fields=(
+                                "nextPageToken, newStartPageToken, "
+                                "changes(fileId, file(id, name, mimeType, "
+                                "parents, trashed, size))"
+                            ),
+                            # Request size
+                        )
+                        .execute()
                     )
-                    .execute()
-                )
 
                 # Update the last_change_token immediately after a successful response
                 self.last_change_token = response.get(
@@ -858,7 +857,7 @@ class SyncManager:
                         local_path  # Initialize new_local_path for finally block
                     )
 
-                    # Add local_path to ignore list if it exists, for the duration of processing this change
+                    # Add local_path to ignore list while processing this change
                     if local_path:
                         self._sync_in_progress_files.add(local_path)
 
@@ -882,7 +881,10 @@ class SyncManager:
                                 # A more robust solution would ensure parent folders are created first.
                                 local_parent_path = LOCAL_SYNC_FOLDER
                                 logging.warning(
-                                    f"Remote change: Parent for {name} (ID: {file_id}) not found in local mapping. Assuming root."
+                                    (
+                                        f"Remote change: Parent for {name} (ID: {file_id})"
+                                        " not found in local mapping. Assuming root."
+                                    )
                                 )
 
                             new_local_path = os.path.join(local_parent_path, name)
@@ -894,47 +896,33 @@ class SyncManager:
                                 self._sync_in_progress_files.add(new_local_path)
 
                             if mime_type == "application/vnd.google-apps.folder":
-                                # Folder created/moved/renamed
-                                if not os.path.exists(new_local_path):
-                                    os.makedirs(new_local_path)
-                                    logging.info(
-                                        f"Remote: Created local folder {new_local_path}"
-                                    )
+                                # Folder created/moved/renamed — pure streaming mode:
+                                # No real directories created on disk. FUSE serves
+                                # directory listings via readdir() using the mapping.
 
-                                # Update mapping
+                                # Update mapping — only metadata changes
                                 if (
                                     local_path and local_path != new_local_path
                                 ):  # Renamed/Moved
-                                    if isinstance(local_path, str) and os.path.exists(
-                                        local_path
-                                    ):
-                                        # Use shutil.move for folders to handle content
-                                        shutil.move(local_path, new_local_path)
-                                        logging.info(
-                                            f"Remote: Moved old local folder {local_path} to {new_local_path}"
-                                        )
                                     # Remove old mapping entries for the folder and its children
-                                    items_to_delete_from_mapping = [
+                                    items_to_delete = [
                                         lp
                                         for lp in self.local_file_info
-                                        if lp.startswith(local_path)
+                                        if lp == local_path
+                                        or lp.startswith(local_path + os.sep)
                                     ]
-                                    for item_path in items_to_delete_from_mapping:
-                                        item_info = self.local_file_info.get(item_path)
+                                    for item_path in items_to_delete:
+                                        item_info = self.local_file_info.pop(
+                                            item_path, None
+                                        )
                                         if item_info and isinstance(item_info, dict):
                                             item_id = item_info.get("id")
-                                            if item_id:
-                                                del self.local_file_info[item_path]
-                                                if (
-                                                    item_id
-                                                    in self.drive_id_to_local_path
-                                                ):
-                                                    del self.drive_id_to_local_path[
-                                                        item_id
-                                                    ]
-                                    # Add new mapping entries for the folder and its children
-                                    # This is a simplified approach; a full re-scan of the moved local folder might be needed
-                                    # to correctly update all children paths in mapping. For now, we'll just update the folder itself.
+                                            if (
+                                                item_id
+                                                and item_id
+                                                in self.drive_id_to_local_path
+                                            ):
+                                                del self.drive_id_to_local_path[item_id]
 
                                 self.local_file_info[new_local_path] = {
                                     "id": file_id,
@@ -947,122 +935,61 @@ class SyncManager:
 
                             else:
                                 # File created/updated/moved/renamed
-                                current_file_mode = self.local_file_info.get(
-                                    local_path, {}
-                                ).get("mode", DEFAULT_FILE_MODE)
-
-                                # --- Conflict detection ---
-                                # If the file already exists locally and was tracked locally,
-                                # check if it was modified since the last sync.
-                                if (
-                                    local_path
-                                    and local_path == new_local_path
-                                    and current_file_mode == "local"
-                                ):
-                                    last_sync_time = self.local_file_info.get(
-                                        local_path, {}
-                                    ).get("last_accessed_time", 0)
-                                    if (
-                                        last_sync_time > 0
-                                        and self._has_local_changes_since(
-                                            local_path, last_sync_time
-                                        )
-                                    ):
-                                        logging.warning(
-                                            "CONFLICT: '%s' changed both locally and remotely. "
-                                            "Backing up local version and accepting remote.",
-                                            local_path,
-                                        )
-                                        self._backup_local_file(local_path)
-
+                                # In pure streaming mode, we never have local file content,
+                                # so there's no conflict detection — just update metadata.
                                 if (
                                     local_path and local_path != new_local_path
                                 ):  # Renamed/Moved
-                                    if isinstance(local_path, str) and os.path.exists(
-                                        local_path
-                                    ):  # Check if local_path exists before removing
-                                        os.remove(local_path)  # Remove old local file
-                                        logging.info(
-                                            f"Remote: Removed old local file {local_path}"
-                                        )
+                                    # Pure streaming mode — no local file to remove.
+                                    # Just update the mapping.
                                     del self.local_file_info[local_path]
                                     logging.info(
-                                        f"Remote: Renamed/Moved local file mapping from {local_path} to {new_local_path}"
+                                        (
+                                            f"Remote: Renamed/Moved local file mapping"
+                                            f" from {local_path} to {new_local_path}"
+                                        )
                                     )
 
-                                # Decide whether to download content or create placeholder
-                                if current_file_mode == "local":
-                                    logging.info(
-                                        f"Remote: Downloading/Updating file '{name}' (ID: {file_id}) to {new_local_path}"
-                                    )
-                                    if self.download_file(file_id, new_local_path):
-                                        self.local_file_info[new_local_path] = {
-                                            "id": file_id,
-                                            "mode": current_file_mode,
-                                            "mimeType": mime_type,
-                                            "size": size,
-                                            "last_accessed_time": time.time(),  # Update access time on download
-                                        }
-                                        self.drive_id_to_local_path[file_id] = (
-                                            new_local_path
-                                        )
-                                        self._save_mapping()
-                                elif current_file_mode == "online":
-                                    logging.info(
-                                        f"Remote: Updating placeholder for file '{name}' (ID: {file_id}) at {new_local_path}"
-                                    )
-                                    # Ensure placeholder exists and update metadata
-                                    if not os.path.exists(new_local_path):
-                                        os.makedirs(
-                                            os.path.dirname(new_local_path),
-                                            exist_ok=True,
-                                        )
-                                        with open(new_local_path, "w"):
-                                            pass
-                                    self.local_file_info[new_local_path] = {
-                                        "id": file_id,
-                                        "mode": current_file_mode,
-                                        "mimeType": mime_type,
-                                        "size": size,
-                                        "last_accessed_time": 0,  # Not accessed yet
-                                    }
-                                    self.drive_id_to_local_path[file_id] = (
-                                        new_local_path
-                                    )
-                                    self._save_mapping()
+                                # In pure streaming mode, we never download content to disk.
+                                # All files are always "streaming" — update metadata only.
+                                logging.info(
+                                    f"Remote: Updated metadata for file '{name}' (ID: {file_id})"
+                                )
+                                # Update mapping with latest size/mimeType from Drive
+                                self.local_file_info[new_local_path] = {
+                                    "id": file_id,
+                                    "mode": DEFAULT_FILE_MODE,
+                                    "mimeType": mime_type,
+                                    "size": size,
+                                    "last_accessed_time": 0,
+                                }
+                                self.drive_id_to_local_path[file_id] = new_local_path
+                                self._save_mapping()
 
                         else:  # drive_file is None or drive_file['trashed'] is True
                             # Item deleted or trashed on Drive
-                            if (
-                                local_path
-                                and isinstance(local_path, str)
-                                and os.path.exists(local_path)
-                            ):  # Check if local_path exists before os operations
-                                if os.path.isdir(local_path):
-                                    shutil.rmtree(
-                                        local_path
-                                    )  # Use shutil.rmtree for non-empty directories
-                                    logging.info(
-                                        f"Remote: Removed local folder {local_path}"
-                                    )
-                                else:
-                                    os.remove(local_path)
-                                    logging.info(
-                                        f"Remote: Removed local file {local_path}"
-                                    )
+                            removed_from_mapping = False
+                            if local_path and local_path in self.local_file_info:
+                                del self.local_file_info[local_path]
+                                removed_from_mapping = True
+                            if file_id in self.drive_id_to_local_path:
+                                del self.drive_id_to_local_path[file_id]
+                                removed_from_mapping = True
 
-                                # Remove from mapping
-                                if local_path in self.local_file_info:
-                                    del self.local_file_info[local_path]
-                                if file_id in self.drive_id_to_local_path:
-                                    del self.drive_id_to_local_path[file_id]
+                            if removed_from_mapping:
                                 self._save_mapping()
                                 logging.info(
-                                    f"Remote: Deleted local item {local_path} (ID: {file_id}) due to Drive change."
+                                    "Remote: Deleted local item '%s' (ID: %s) due to Drive change.",
+                                    local_path,
+                                    file_id,
                                 )
                             else:
                                 logging.info(
-                                    f"Remote: Item (ID: {file_id}) deleted on Drive, but not found locally or already unmapped."
+                                    (
+                                        "Remote: Item (ID: %s) deleted on Drive,"
+                                        " but not found locally or already unmapped."
+                                    ),
+                                    file_id,
                                 )
                     finally:
                         if local_path:
@@ -1078,8 +1005,8 @@ class SyncManager:
             except HttpError as error:
                 logging.error(f"An error occurred during remote sync: {error}")
                 break
-            except Exception as e:
-                logging.error(f"Unexpected error during remote sync: {e}")
+            except Exception:
+                logging.exception("Unexpected error during remote sync")
                 break
 
         logging.info(
@@ -1088,8 +1015,9 @@ class SyncManager:
 
     def set_file_mode(self, local_path, new_mode):
         """
-        Changes the sync mode of a file between 'local' and 'online'.
-        Triggers download or content deletion as necessary.
+        Deprecated in pure streaming mode. All files are always streamed
+        — there is no local content to control. Kept as a no-op stub for
+        backward compatibility with any callers.
         """
         if new_mode not in ["local", "online"]:
             logging.error(
@@ -1109,78 +1037,18 @@ class SyncManager:
             logging.warning(f"Cannot set mode for a folder: {local_path}")
             return False
 
-        current_mode = file_info.get("mode")  # Use .get() for safety
-        drive_file_id = file_info.get("id")  # Use .get() for safety
-
-        if current_mode is None or drive_file_id is None:
-            logging.error(
-                f"Missing mode or Drive ID for {local_path} in mapping. Cannot set mode."
-            )
-            return False
-
-        if current_mode == new_mode:
-            logging.info(f"File {local_path} is already in '{new_mode}' mode.")
-            return True
-
-        try:
-            self._sync_in_progress_files.add(local_path)  # Add to ignore list
-            if new_mode == "local":
-                # Change from online to local: download content
-                logging.info(
-                    f"Changing mode for {local_path} to 'local'. Downloading content..."
-                )
-                if self.download_file(drive_file_id, local_path):
-                    file_info["mode"] = new_mode
-                    file_info["last_accessed_time"] = (
-                        time.time()
-                    )  # Update access time on download
-                    self._save_mapping()
-                    return True
-                else:
-                    logging.error(
-                        f"Failed to download content for {local_path}. Mode not changed."
-                    )
-                    return False
-
-            elif new_mode == "online":
-                # Change from local to online: delete local content, leave placeholder
-                logging.info(
-                    f"Changing mode for {local_path} to 'online'. Deleting local content..."
-                )
-                try:
-                    if os.path.exists(local_path):
-                        os.remove(local_path)
-                    # Create empty placeholder
-                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                    with open(local_path, "w"):
-                        pass
-                    file_info["mode"] = new_mode
-                    file_info["last_accessed_time"] = 0  # Reset access time
-                    self._save_mapping()
-                    logging.info(
-                        f"Content for {local_path} removed. Placeholder created."
-                    )
-                    return True
-                except Exception as e:
-                    logging.error(
-                        f"Error deleting local content for {local_path}: {e}. Mode not changed."
-                    )
-                    return False
-            return False  # Should not be reached
-        finally:
-            self._sync_in_progress_files.discard(local_path)
+        logging.info(
+            f"set_file_mode({local_path}, '{new_mode}') called — no-op in pure streaming mode."
+        )
+        return True
 
     def update_last_accessed_time(self, local_path):
         """Updates the last accessed time for a file in the mapping."""
         file_info = self.local_file_info.get(local_path)
-        if (
-            file_info
-            and isinstance(file_info, dict)
-            and file_info.get("mode") == "local"
-        ):
+        if file_info and isinstance(file_info, dict):
             file_info["last_accessed_time"] = time.time()
             self._save_mapping()
-            logging.debug(f"Updated last accessed time for {local_path}")
+            logging.debug("Updated last accessed time for %s", local_path)
 
     def _remove_from_mapping(self, local_path):
         """Remove a single file from the mapping without touching Drive."""

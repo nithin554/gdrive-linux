@@ -1,15 +1,14 @@
 """
-gdrive-linux: Native Linux Google Drive two-way sync application.
+gdrive-linux: Native Linux Google Drive network drive.
 
-Entry point for the application. Initializes all components:
-- Google Drive authentication
-- System tray GUI
-- Sync components (SyncManager, watchdog, sync threads) are started
-  only after the user selects a sync folder via Settings.
+Mounts a FUSE virtual filesystem at ~/Gdrive that presents Google Drive
+as a pure streaming network drive — zero local storage, reads stream
+from the Drive API, writes upload on close.
 """
 
 import os
 import sys
+import time
 import logging
 import threading
 
@@ -18,19 +17,86 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from watchdog.observers import Observer
-
 from config import (
-    LOCAL_SYNC_FOLDER,
+    FUSE_MOUNT_POINT,
     REMOTE_SYNC_INTERVAL_SECONDS,
-    ROLLBACK_CHECK_INTERVAL_SECONDS,
-    SETTINGS_FILE,
 )
 from auth import authenticate_google_drive
 from sync_manager import SyncManager
-from watchdog_handler import DriveSyncEventHandler
-from sync_threads import RemoteSyncThread, RollbackThread
+from fuse_drive import DriveFS
+from sync_threads import RemoteSyncThread
 from gui_elements import SettingsWindow, SystemTrayIcon
+
+
+def _ensure_fuse_library() -> None:
+    """Ensure the FUSE shared library can be found by fusepy.
+
+    fusepy looks for ``libfuse.so`` via ``ctypes.util.find_library('fuse')``,
+    but many systems ship only ``libfuse.so.2`` without a ``libfuse.so`` symlink.
+    This function searches for a working libfuse and sets the
+    ``FUSE_LIBRARY_PATH`` environment variable so fusepy can load it.
+
+    It prefers the library version matching the available ``fusermount``
+    binary (fuse3 over fuse2), since mixing versions causes mount failures.
+    """
+    if os.environ.get("FUSE_LIBRARY_PATH"):
+        return
+
+    try:
+        from ctypes.util import find_library
+
+        found = find_library("fuse")
+    except Exception:
+        found = None
+
+    if found and os.path.isfile(found):
+        return
+
+    # Determine which fusermount is available to match library version
+    from shutil import which
+
+    has_fusermount3 = which("fusermount3") is not None
+
+    # On systems with fusermount3, prefer fuse3 libraries (libfuse3.so.*)
+    # Otherwise fall back to fuse2 (libfuse.so.2)
+    if has_fusermount3:
+        candidates = ["libfuse3.so", "libfuse3.so.4", "libfuse.so.2"]
+    else:
+        candidates = ["libfuse.so.2", "libfuse3.so", "libfuse3.so.4"]
+
+    search_dirs = [
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/i386-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib/arm-linux-gnueabihf",
+        "/usr/lib64",
+        "/usr/lib",
+        "/lib/x86_64-linux-gnu",
+        "/lib",
+    ]
+
+    for directory in search_dirs:
+        for name in candidates:
+            path = os.path.join(directory, name)
+            if os.path.isfile(path):
+                os.environ["FUSE_LIBRARY_PATH"] = path
+                logging.info(
+                    "Auto-detected FUSE library: %s (fusermount=%s, fuse3=%s)",
+                    path,
+                    "fusermount3" if has_fusermount3 else "fusermount",
+                    "yes" if has_fusermount3 else "no",
+                )
+                return
+
+    logging.error(
+        "FUSE shared library not found. "
+        "Install libfuse2 (e.g., 'sudo apt install libfuse2') "
+        "or set FUSE_LIBRARY_PATH to the full path of libfuse.so.2 / libfuse3.so. "
+        "Run: locate libfuse.so.2"
+    )
+
+
+_ensure_fuse_library()
 
 
 class SyncApp(QApplication):
@@ -38,15 +104,13 @@ class SyncApp(QApplication):
 
     def __init__(self, sys_argv):
         super().__init__(sys_argv)
-        self.setQuitOnLastWindowClosed(
-            False
-        )  # Don't quit when settings window is closed
+        self.setQuitOnLastWindowClosed(False)
 
         self.drive_service = None
         self.sync_manager = None
-        self.observer = None
+        self._fuse_thread = None
+        self._fuse_connection = None
         self.remote_sync_thread = None
-        self.rollback_thread = None
         self.stop_event = threading.Event()
         self.settings_window = None
         self.tray_icon = None
@@ -54,10 +118,7 @@ class SyncApp(QApplication):
 
         self._init_auth_only()
         self._init_tray_icon()
-
-        # If a sync folder is already configured, start sync immediately
-        if os.path.exists(SETTINGS_FILE) and os.path.isdir(LOCAL_SYNC_FOLDER):
-            self.start_sync()
+        self.start_sync()
 
     def _init_auth_only(self):
         """Authenticate with Google Drive without starting sync."""
@@ -86,13 +147,176 @@ class SyncApp(QApplication):
             self.quit()
             return
 
-    def start_sync(self, fresh: bool = False):
-        """Start synchronization after the sync folder is selected.
+    def _mount_fuse(self):
+        """Mount the FUSE filesystem in a background thread.
 
-        Args:
-            fresh: If True, force a fresh initial sync from Drive even if
-                   a mapping already exists (used when folder changes).
+        Verifies the mount succeeded by checking if the mount point is
+        actually a FUSE filesystem after starting the thread. If FUSE
+        fails to mount (e.g., fusermount not found, stale mount, or
+        permission error), the error is logged and a tray notification
+        is shown rather than silently pretending the drive is available.
         """
+        mount_point = FUSE_MOUNT_POINT
+
+        # Ensure the mount point directory exists (as a regular directory)
+        if not os.path.exists(mount_point):
+            os.makedirs(mount_point)
+            logging.info("Created FUSE mount point: %s", mount_point)
+
+        # Check if mount point has leftover real directories from a previous
+        # failed FUSE mount. These are NOT FUSE-served — they're real ext4 dirs.
+        if os.path.isdir(mount_point) and not os.path.ismount(mount_point):
+            leftover_items = os.listdir(mount_point)
+            if leftover_items:
+                logging.warning(
+                    "Mount point %s contains %d leftover items from a previous "
+                    "failed FUSE mount. These are real directories on disk, not "
+                    "your Google Drive files. FUSE will mount over them.",
+                    mount_point,
+                    len(leftover_items),
+                )
+                self._on_tray_message(
+                    f"~/Gdrive contains {len(leftover_items)} leftover items from a "
+                    "previous failed mount. FUSE will mount over them now."
+                )
+
+        # Check for stale FUSE mounts before attempting to mount
+        if os.path.ismount(mount_point):
+            logging.warning(
+                "Mount point %s is already a mount. Attempting to unmount first.",
+                mount_point,
+            )
+            self._unmount_fuse()
+            # Small delay to let the unmount settle
+            time.sleep(0.5)
+
+        # Create DriveFS with a notification callback for delete warnings
+        def _notify(msg: str):
+            logging.warning("FUSE notification: %s", msg)
+            self._on_tray_message(msg)
+
+        fs = DriveFS(
+            self.sync_manager, notify_callback=_notify, stop_event=self.stop_event
+        )
+
+        # Use an Event to signal mount success/failure from the FUSE thread.
+        # This avoids a race-prone time.sleep() + ismount() check.
+        mount_event = threading.Event()
+        fuse_error = []
+
+        def _run_fuse():
+            try:
+                from fuse import FUSE as _FUSE
+
+                _FUSE(
+                    fs,
+                    mount_point,
+                    foreground=True,
+                    allow_other=False,
+                    nonempty=True,
+                )
+            except Exception as e:
+                fuse_error.append(e)
+                logging.error("FUSE mount failed: %s", e)
+            finally:
+                mount_event.set()
+
+        self._fuse_thread = threading.Thread(target=_run_fuse, daemon=True)
+        self._fuse_thread.start()
+
+        # Wait for the FUSE thread to either complete (error) or mount.
+        # fusepy's FUSE() constructor blocks until mount succeeds or fails,
+        # so once mount_event is set, we have a definitive answer.
+        mount_event.wait(timeout=10.0)
+
+        if fuse_error:
+            error_msg = str(fuse_error[0])
+            logging.error("FUSE mount error: %s", error_msg)
+            self._on_tray_message(
+                f"FUSE mount failed: {error_msg[:100]}. "
+                "Check that libfuse2 is installed and ~/Gdrive is not in use."
+            )
+            return False
+
+        # Verify the mount actually took effect
+        if not os.path.ismount(mount_point):
+            logging.error(
+                "FUSE thread signalled success but %s is not a mount point. "
+                "FUSE may have failed silently.",
+                mount_point,
+            )
+            self._on_tray_message(
+                "FUSE mount failed silently. Try running: fusermount -uz ~/Gdrive"
+            )
+            return False
+
+        logging.info("FUSE filesystem mounted at %s (verified).", mount_point)
+        return True
+
+    def _unmount_fuse(self):
+        """Unmount the FUSE filesystem.
+
+        Tries a standard unmount first, then falls back to lazy unmount
+        (``fusermount -uz``) if the device is busy — for example when the
+        FUSE thread hasn't fully exited yet.
+        """
+        mount_point = FUSE_MOUNT_POINT
+        if not os.path.ismount(mount_point):
+            return
+
+        try:
+            import subprocess
+
+            # Try standard unmount
+            result = subprocess.run(
+                ["fusermount", "-u", mount_point],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logging.info("FUSE filesystem unmounted from %s.", mount_point)
+                return
+
+            # If busy, try lazy unmount
+            if (
+                "busy" in result.stderr.lower()
+                or "device or resource busy" in result.stderr.lower()
+            ):
+                logging.warning(
+                    "Standard unmount failed (%s). Trying lazy unmount...",
+                    result.stderr.strip(),
+                )
+                result = subprocess.run(
+                    ["fusermount", "-uz", mount_point],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    logging.info(
+                        "FUSE filesystem lazily unmounted from %s.", mount_point
+                    )
+                else:
+                    logging.warning(
+                        "Lazy unmount also failed: %s", result.stderr.strip()
+                    )
+            else:
+                logging.warning(
+                    "fusermount -u returned %d: %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+        except FileNotFoundError:
+            logging.warning(
+                "fusermount not found; cannot unmount FUSE cleanly. "
+                "The mount will be cleaned up on process exit."
+            )
+        except Exception as e:
+            logging.error("Error unmounting FUSE: %s", e)
+
+    def start_sync(self):
+        """Start the Google Drive network drive."""
         if self._sync_started:
             logging.info("Sync already started.")
             return
@@ -100,60 +324,52 @@ class SyncApp(QApplication):
             logging.error("Cannot start sync: Drive service not initialized.")
             return
 
-        # 1. Ensure local sync folder exists
-        if not os.path.exists(LOCAL_SYNC_FOLDER):
-            os.makedirs(LOCAL_SYNC_FOLDER)
-            logging.info(f"Created local sync folder: {LOCAL_SYNC_FOLDER}")
+        # 1. Ensure the mount point directory exists
+        if not os.path.exists(FUSE_MOUNT_POINT):
+            os.makedirs(FUSE_MOUNT_POINT)
+            logging.info("Created FUSE mount point: %s", FUSE_MOUNT_POINT)
 
         # 2. Initialize SyncManager
         self.sync_manager = SyncManager(self.drive_service)
 
-        # 3. Detect if the mapping is stale (mismatched sync folder)
-        mapping_stale = self.sync_manager.is_mapping_for_other_folder()
-        if mapping_stale:
+        # 3. Check if mapping is stale (e.g., from a previous sync folder)
+        if self.sync_manager.is_mapping_for_other_folder():
             logging.warning(
-                "Mapping references a different folder than %s. "
-                "Re-initializing sync with fresh mapping.",
-                LOCAL_SYNC_FOLDER,
+                "Mapping references a different path than %s. "
+                "Re-initializing with fresh mapping.",
+                FUSE_MOUNT_POINT,
             )
-
-        # 4. Perform initial sync from Drive (creates placeholders in online mode)
-        if fresh or mapping_stale or not self.sync_manager.last_change_token:
-            if mapping_stale:
-                logging.info("Mapping is stale — clearing and re-running initial sync.")
+            self.sync_manager.initial_sync_from_drive()
+        elif not self.sync_manager.last_change_token:
             self.sync_manager.initial_sync_from_drive()
         else:
             logging.info(
-                "Skipping initial sync. last_change_token found. Will check for remote changes."
+                "Skipping initial sync. last_change_token found. "
+                "Will check for remote changes."
             )
 
-        # 5. Initialize and start local file system monitor
-        event_handler = DriveSyncEventHandler(self.sync_manager)
-        self.observer = Observer()
-        self.observer.schedule(event_handler, LOCAL_SYNC_FOLDER, recursive=True)
-        self.observer.start()
-        logging.info(
-            f"Started monitoring local directory: {os.path.abspath(LOCAL_SYNC_FOLDER)}"
-        )
+        # 4. Mount FUSE filesystem
+        if not self._mount_fuse():
+            logging.error(
+                "FUSE mount failed. Sync cannot proceed without the virtual filesystem."
+            )
+            self._on_tray_message(
+                f"Failed to mount FUSE at {FUSE_MOUNT_POINT}. "
+                "Check that libfuse2 is installed."
+            )
+            return
 
-        # 6. Start remote sync thread
+        # 5. Start remote sync thread
         self.remote_sync_thread = RemoteSyncThread(self.sync_manager, self.stop_event)
         self.remote_sync_thread.sync_status_signal.connect(self._on_tray_message)
         self.remote_sync_thread.start()
         logging.info(
-            f"Started remote sync thread, checking every {REMOTE_SYNC_INTERVAL_SECONDS} seconds."
-        )
-
-        # 7. Start rollback thread
-        self.rollback_thread = RollbackThread(self.sync_manager, self.stop_event)
-        self.rollback_thread.rollback_status_signal.connect(self._on_tray_message)
-        self.rollback_thread.start()
-        logging.info(
-            f"Started rollback thread, checking every {ROLLBACK_CHECK_INTERVAL_SECONDS} seconds."
+            "Started remote sync thread, checking every %s seconds.",
+            REMOTE_SYNC_INTERVAL_SECONDS,
         )
 
         self._sync_started = True
-        self._on_tray_message("Sync started.")
+        self._on_tray_message(f"Google Drive mounted at {FUSE_MOUNT_POINT}")
 
     def stop_sync(self):
         """Stop all sync components."""
@@ -163,17 +379,11 @@ class SyncApp(QApplication):
         logging.info("Stopping sync...")
         self.stop_event.set()
 
-        if self.observer and self.observer.is_alive():
-            self.observer.stop()
-            self.observer.join()
+        self._unmount_fuse()
 
         if self.remote_sync_thread and self.remote_sync_thread.isRunning():
             self.remote_sync_thread.quit()
             self.remote_sync_thread.wait()
-
-        if self.rollback_thread and self.rollback_thread.isRunning():
-            self.rollback_thread.quit()
-            self.rollback_thread.wait()
 
         self._sync_started = False
         self.stop_event.clear()
@@ -189,38 +399,20 @@ class SyncApp(QApplication):
             self.tray_icon._show_tray_message(message)
 
     def open_sync_folder(self):
-        """Open the local sync folder in the file manager."""
+        """Open the mount point in the file manager."""
         self.tray_icon._open_sync_folder()
 
     def manual_sync(self):
-        """Trigger a manual sync from Drive.
-
-        If the mapping is stale (references a different folder), performs a
-        full re-scan to create placeholders in the current sync folder.
-        Otherwise runs incremental change detection via sync_from_remote().
-        """
+        """Trigger a manual sync from Drive."""
         if not self._sync_started:
-            self._on_tray_message("Select a sync folder in Settings first.")
+            self._on_tray_message("Sync not active.")
             return
         if self.sync_manager:
             logging.info("Manual sync triggered.")
             self._on_tray_message("Manual sync started...")
-
-            # Check for stale mapping (folder changed since last run)
-            if self.sync_manager.is_mapping_for_other_folder():
-                logging.warning(
-                    "Manual sync: mapping is stale (different folder). "
-                    "Running full re-scan to create placeholders."
-                )
-                self._on_tray_message("Mapping is stale. Running full re-scan...")
-                threading.Thread(
-                    target=self.sync_manager.initial_sync_from_drive, daemon=True
-                ).start()
-            else:
-                threading.Thread(
-                    target=self.sync_manager.sync_from_remote, daemon=True
-                ).start()
-
+            threading.Thread(
+                target=self.sync_manager.sync_from_remote, daemon=True
+            ).start()
             self._on_tray_message("Manual sync initiated.")
         else:
             self._on_tray_message("Sync manager not initialized.")
@@ -229,8 +421,13 @@ class SyncApp(QApplication):
         """Show the settings window."""
         if self.settings_window is None:
             self.settings_window = SettingsWindow(self)
+            self.settings_window.destroyed.connect(self._on_settings_closed)
         self.settings_window.show()
         self.settings_window.activateWindow()
+
+    def _on_settings_closed(self):
+        """Reset settings_window reference when the window is destroyed."""
+        self.settings_window = None
 
     def quit_app(self):
         """Gracefully shut down all components and quit."""

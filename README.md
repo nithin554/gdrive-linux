@@ -1,38 +1,94 @@
 # gdrive-linux
 
-**Native Linux Google Drive two-way synchronization application** with real-time file monitoring, system tray integration, and on-demand file content management.
+**Native Google Drive network drive for Linux** — mounts your Google Drive as a
+FUSE virtual filesystem at `~/Gdrive`. Pure streaming architecture: zero local
+storage, files are streamed from Drive on read and uploaded on close.
+
+[![Pull Request Checks](https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml/badge.svg)](https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml)
+[![Build and Release](https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml/badge.svg)](https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
 
-- **Two-way sync** between local folder and Google Drive
-- **Real-time monitoring** using `watchdog` with debounced file events
-- **System tray icon** with context menu (open folder, manual sync, settings, exit)
-- **On-demand sync** — placeholder files that download content only when accessed
-- **Automatic rollback** — unused local files can revert to placeholders to save space
-- **Periodic remote sync** — checks Google Drive for changes using the Changes API
-- **OAuth 2.0 authentication** with Google account
-- **Settings window** — view account status, log out, change sync folder
-- **Conflict resolution** — when both local and remote change, remote wins with a local backup
-- **XDG autostart** — optional start on login
+- **True network drive** — FUSE virtual filesystem mounted at `~/Gdrive`, accessible to all apps
+- **Pure streaming** — `read()` streams from Drive API into memory; `write()` buffers in memory, uploads on close. **Nothing stored on disk**
+- **No placeholder files** — no cache files, no downloads, no rollback logic
+- **Instant listing** — `ls` / file manager / `stat` are metadata-only, zero network
+- **System tray icon** — context menu with open folder, settings, exit
+- **OAuth 2.0 authentication** — secure Google Drive access
+- **Periodic remote sync** — checks Drive for new/changed files every 60s
+- **Read-write** — create, edit, rename files and folders normally
+- **Delete protection** — delete operations are blocked with a notification to prevent accidental permanent deletion
+- **FUSE mount verification** — detects stale mounts, leftover real directories, and failed mounts with user notification
+- **Account switching** — log out and log in with a different Google account without restarting
+- **Cross-distro packages** — `.deb`, `.rpm`, `.pkg.tar.zst`, and universal AppImage
+
+## How It Works
+
+gdrive-linux mounts a **FUSE virtual filesystem** at `~/Gdrive` that presents
+your Google Drive as a regular network drive — but **no file content is ever
+stored on your disk**. Every `read()` streams data directly from the Drive API
+over HTTP, and every `write()` is held in memory and uploaded to Drive when
+the file is closed.
+
+```
+User / app reads file content
+        │
+        ▼
+  FUSE intercepts read()          ← open()/stat() are free (zero network)
+        │
+        ▼
+  FUSE streams from Drive API     ← content goes into memory (never disk)
+        │
+        ▼
+  User edits file
+        │
+        ▼
+  FUSE uploads to Drive on close  ← dirty buffer sent to Drive API
+```
+
+**Key benefits:**
+- ✅ **Zero disk usage** — no cache files, no placeholders, no downloads ever
+- ✅ **Instant listing** — files appear immediately with real sizes (metadata only)
+- ✅ `ls` / file manager / `stat` do **not** trigger any network calls
+- ✅ **Infinite storage** — your entire Drive is accessible with zero local footprint
+- ✅ **Always fresh** — reads the latest version from Drive every time
+- ✅ **No rollback needed** — nothing is stored to roll back
+- ✅ **Delete-safe** — accidental deletions are blocked with a warning notification
 
 ## Installation
 
 ### From release
 
-Download the package for your distribution from the [Releases](https://github.com/nithin/gdrive-linux/releases) page:
+Download the package for your distribution from the [Releases page](https://github.com/nithin/gdrive-linux/releases).
 
-| Package | Distro | File |
-|---------|--------|------|
-| `.deb` | Debian, Ubuntu, Mint, Pop!_OS | `gdrive-linux-{version}.deb` |
-| `.rpm` | Fedora, RHEL, CentOS | `gdrive-linux-{version}.rpm` |
-| `.pkg.tar.zst` | Arch, Manjaro, EndeavourOS | `gdrive-linux-{version}.pkg.tar.zst` |
-| `AppImage` | **All distros** (universal) | `gdrive-linux-{version}-x86_64.AppImage` |
+| Package | Distro | Install command |
+|---------|--------|----------------|
+| `.deb` | Debian, Ubuntu, Mint, Pop!_OS | `sudo dpkg -i gdrive-linux-*.deb` |
+| `.rpm` | Fedora, RHEL, CentOS | `sudo rpm -i gdrive-linux-*.rpm` |
+| `.pkg.tar.zst` | Arch, Manjaro, EndeavourOS | `sudo pacman -U gdrive-linux-*.pkg.tar.zst` |
+| `AppImage` | **All distros** | `chmod +x *.AppImage && ./gdrive-linux-*.AppImage` |
 
-**AppImage** requires no installation — just make it executable and run:
+**Dependencies:** The application requires **FUSE** (libfuse2) to be installed:
+
 ```bash
-chmod +x gdrive-linux-*.AppImage
-./gdrive-linux-*.AppImage
+# Debian/Ubuntu
+sudo apt install libfuse2
+
+# Fedora
+sudo dnf install fuse-libs
+
+# Arch
+sudo pacman -S fuse2
 ```
+
+> **Note:** The application uses `fusepy` which looks for `libfuse.so` via `ctypes.util.find_library('fuse')`.
+> Some systems only have `libfuse.so.2` (e.g., `/usr/lib/x86_64-linux-gnu/libfuse.so.2`).
+> If you get a "FUSE library not found" error, set the environment variable:
+> ```bash
+> export FUSE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libfuse.so.2
+> ```
+> Find your `libfuse.so.2` path with: `locate libfuse.so.2` or `find /usr -name 'libfuse.so*'`
 
 ### From source
 
@@ -45,7 +101,7 @@ python main.py
 
 ## First-time Setup
 
-**If running from a pre-built package:** OAuth credentials are already bundled. Just run the application.
+**If running from a pre-built package:** OAuth credentials are bundled. Just run the application.
 
 **If building from source:** You need a Google Cloud project with the Drive API enabled.
 
@@ -64,15 +120,31 @@ gdrive-linux
 
 On first run, your browser will open for Google account authentication. A `token.json` file is auto-generated in `~/.config/gdrive-linux/`.
 
+## Usage
+
+1. **Launch the application** — it authenticates with Google Drive and mounts the network drive automatically
+2. The application immediately:
+   - Scans your Google Drive and builds a file index
+   - Mounts the FUSE virtual filesystem at `~/Gdrive`
+   - Files appear instantly with real sizes — **zero bytes stored locally**
+   - Open or read a file — content streams from Drive into memory on demand
+   - File manager scans and `ls` commands do **not** trigger any network calls
+   - Write to a file — changes are held in memory, uploaded to Drive on close
+3. **Left-click the tray icon** to open the network drive in your file manager
+4. **Right-click the tray icon** to:
+   - View your signed-in Google account email
+   - Open the network drive in your file manager
+   - Open settings (where you can log out / switch accounts, trigger manual sync, or toggle autostart)
+   - Quit the application
+
 ## Configuration
 
 Auto-generated files in `~/.config/gdrive-linux/`:
 
 | File | Purpose |
 |------|---------|
-| `token.json` | User's Google authentication token |
-| `sync_mapping.json` | Local↔Drive file ID mapping |
-| `settings.json` | User preferences (sync folder, etc.) |
+| `token.json` | User's Google OAuth token |
+| `sync_mapping.json` | Local path ↔ Drive file ID mapping |
 
 Environment variables:
 
@@ -80,32 +152,47 @@ Environment variables:
 |----------|---------|
 | `GDRIVE_CLIENT_ID` | Google OAuth client ID |
 | `GDRIVE_CLIENT_SECRET` | Google OAuth client secret |
-| `GDRIVE_SYNC_FOLDER` | Override the local sync directory |
 
 Edit `config.py` to customize defaults:
-- `LOCAL_SYNC_FOLDER` — path to the local sync directory
-- `DEFAULT_FILE_MODE` — `"local"` (download all content) or `"online"` (create placeholders)
 - `REMOTE_SYNC_INTERVAL_SECONDS` — how often to check Drive for changes (default: 60s)
-- `ROLLBACK_PERIOD_SECONDS` — time after which unused local files revert to placeholders (default: 1 hour)
 
 ## Project Structure
 
 ```
 gdrive-linux/
-├── main.py               # Application entry point
+├── main.py               # Application entry point (PyQt6, FUSE mount, auth)
 ├── config.py             # Configuration constants
 ├── auth.py               # Google OAuth 2.0 authentication
-├── sync_manager.py       # Core sync engine (Drive API operations)
-├── watchdog_handler.py   # Local file system event handler
-├── sync_threads.py       # Background threads (remote sync, rollback)
+├── sync_manager.py       # Core sync engine (Drive API operations, mapping)
+├── fuse_drive.py         # FUSE virtual filesystem (pure streaming network drive)
+├── sync_threads.py       # Background remote sync thread
 ├── gui_elements.py       # GUI components (SettingsWindow, SystemTrayIcon)
+├── autostart.py          # XDG autostart .desktop file management
+├── watchdog_handler.py   # Deprecated — kept for reference
 ├── requirements.txt      # Python dependencies
-├── .github/              # CI/CD workflows and scripts
+├── icons/                # Application icons
+├── .github/              # CI/CD workflows and packaging scripts
 └── README.md
 ```
 
 ## Requirements
 
 - Python 3.8+
+- FUSE (libfuse2) — required for the virtual filesystem
 - Google Drive API enabled (free tier)
 - PyQt6 for system tray and GUI
+
+## CI/CD
+
+| Workflow | Description |
+|----------|-------------|
+| [Pull Request Checks](https://github.com/nithin/gdrive-linux/actions/workflows/pull-request.yml) | Lint, type-check, and build verification on PRs |
+| [Build & Release](https://github.com/nithin/gdrive-linux/actions/workflows/merge.yml) | Tag, build, and publish releases on merge to `main` |
+
+Each release produces separate artifacts per distribution:
+- **Ubuntu** → `.deb`, `.rpm`, `.AppImage`
+- **Arch Linux** → `.pkg.tar.zst`
+
+## License
+
+MIT
