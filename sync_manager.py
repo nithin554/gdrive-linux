@@ -8,11 +8,14 @@ import threading
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
+import config
 from config import (
-    LOCAL_SYNC_FOLDER,
     MAPPING_FILE,
     DEFAULT_FILE_MODE,
 )
+
+# config.LOCAL_SYNC_FOLDER is set dynamically after authentication.
+# All runtime code uses config.LOCAL_SYNC_FOLDER.
 
 # --- Conflict resolution strategy ---
 # When both local and remote have changed a file since the last sync,
@@ -22,8 +25,13 @@ CONFLICT_SUFFIX = ".gdrive-conflict"
 
 
 class SyncManager:
-    def __init__(self, drive_service):
+    def __init__(self, drive_service, service_pool=None):
         self.drive_service = drive_service
+        # Thread-local service pool — allows parallel reads from FUSE threads.
+        # Each thread gets its own drive_service instance with an independent
+        # HTTP connection pool, eliminating lock contention for reads.
+        # Falls back to the single drive_service if no pool provided.
+        self._service_pool = service_pool
         # Maps local_path -> {id, mode, mimeType, size, last_accessed_time}
         self.local_file_info = {}
         self.drive_id_to_local_path = {}  # Maps drive_id -> local_path
@@ -32,10 +40,10 @@ class SyncManager:
         self._sync_in_progress_files = set()
         # Lock for thread-safe access to mapping data from FUSE and sync threads
         self._mapping_lock = threading.Lock()
-        # Lock for serialising all Drive API HTTP calls.
-        # ``drive_service._http`` is NOT thread-safe — concurrent calls from
-        # FUSE threads and the remote sync thread cause SSL corruption and
-        # segfaults. Acquire this lock before any execute() or next_chunk().
+        # Lock for serialising Drive API **write** calls that also mutate
+        # shared mapping state (create, update, delete, move).
+        # Read calls (get_media, export, changes.list, files.list) use the
+        # thread-local service from the pool and do NOT need this lock.
         #
         # Must be RLock (reentrant) because ``_get_drive_folder_id()`` acquires
         # this lock internally, and several callers (create_folder, upload_file,
@@ -45,11 +53,31 @@ class SyncManager:
         self._load_mapping()
         logging.info("SyncManager initialized and mapping loaded.")
 
+    # ------------------------------------------------------------------
+    # Thread-safe service access
+    # ------------------------------------------------------------------
+
+    def _get_service(self):
+        """Return a Drive service suitable for the **current thread**.
+
+        For **read** operations (get_media, export, changes.list, files.list),
+        this returns a per-thread service from the pool, allowing concurrent
+        reads without lock contention.
+
+        For **write** operations, use ``self.drive_service`` (the original
+        shared service) inside ``self._drive_api_lock``.
+        """
+        if self._service_pool is not None:
+            svc = self._service_pool.get()
+            if svc is not None:
+                return svc
+        return self.drive_service
+
     def _load_mapping(self):
         """Loads the mapping from a JSON file.
 
         Also migrates any relative paths to absolute paths under
-        LOCAL_SYNC_FOLDER, so the mapping is always consistent with the
+        config.LOCAL_SYNC_FOLDER, so the mapping is always consistent with the
         current FUSE mount point.
         """
         if os.path.exists(MAPPING_FILE):
@@ -61,40 +89,103 @@ class SyncManager:
                     self.last_change_token = data.get("last_change_token", None)
 
                     # --- Path migration -------------------------------------------------
-                    # If the mapping contains relative paths (e.g. from an older version
-                    # where LOCAL_SYNC_FOLDER was just a folder name), rewrite them to
-                    # absolute paths under the current LOCAL_SYNC_FOLDER.
+                    # Handles two scenarios:
+                    #
+                    # 1. Relative paths (e.g., "Videos/movie.mp4") — from older versions
+                    #    where mapping paths were relative to a folder name. Rewrite them
+                    #    to absolute paths under the current config.LOCAL_SYNC_FOLDER.
+                    #
+                    # 2. Absolute paths pointing to an OLD mount point (e.g., paths under
+                    #    ~/Gdrive which no longer exists). Detect the old mount directory
+                    #    and rewrite to the new one.
+                    #
+                    # Paths that are already under the current mount point are left untouched.
                     if self.local_file_info:
                         sample_key = next(iter(self.local_file_info))
-                        if not sample_key.startswith(LOCAL_SYNC_FOLDER + os.sep):
+                        mount = config.LOCAL_SYNC_FOLDER
+                        if mount is None:
+                            mount = os.path.expanduser("~")
+
+                        needs_migration = (
+                            not sample_key.startswith(mount + os.sep)
+                            and sample_key != mount
+                        )
+
+                        if needs_migration:
                             logging.info(
-                                "Migrating mapping paths from relative to absolute "
-                                "(prefix: '%s' -> '%s').",
-                                sample_key.split(os.sep)[0],
-                                LOCAL_SYNC_FOLDER,
+                                "Migrating mapping paths to current mount point "
+                                "(sample: '%s', target: '%s').",
+                                sample_key,
+                                mount,
                             )
                             new_file_info = {}
                             new_drive_map = {}
-                            # Detect the old prefix (first component of the rel path)
-                            old_prefix = sample_key.split(os.sep)[0]
-                            for path, info in self.local_file_info.items():
-                                if path.startswith(old_prefix):
-                                    new_path = os.path.join(
-                                        LOCAL_SYNC_FOLDER,
-                                        path[len(old_prefix) + 1 :],
-                                    )
-                                else:
-                                    new_path = path
-                                new_file_info[new_path] = info
-                            for drive_id, path in self.drive_id_to_local_path.items():
-                                if path.startswith(old_prefix):
-                                    new_path = os.path.join(
-                                        LOCAL_SYNC_FOLDER,
-                                        path[len(old_prefix) + 1 :],
-                                    )
-                                else:
-                                    new_path = path
-                                new_drive_map[drive_id] = new_path
+
+                            if sample_key.startswith("/"):
+                                # Absolute paths — likely from a previous mount point.
+                                # Find the common old prefix to strip.
+                                # Sample: /home/nithin/Gdrive/some/file
+                                # Old mount: /home/nithin/Gdrive  (first 2 components after /)
+                                # New mount: /home/nithin/Google Drive (email)
+                                # Strategy: find the first path component that differs,
+                                # and replace that component and everything after.
+                                old_mount_prefix = os.path.commonpath(
+                                    list(self.local_file_info.keys())[:100]
+                                )
+                                new_file_info = {}
+                                new_drive_map = {}
+                                for path, info in self.local_file_info.items():
+                                    # Compute relative path within the old mount
+                                    if path.startswith(old_mount_prefix):
+                                        rel = path[len(old_mount_prefix) :].lstrip(
+                                            os.sep
+                                        )
+                                    elif path.startswith("/"):
+                                        # Fallback: strip /home/user/ prefix
+                                        rel = os.path.join(*path.split(os.sep)[3:])
+                                    else:
+                                        rel = path
+                                    new_path = os.path.join(mount, rel)
+                                    new_file_info[new_path] = info
+                                for (
+                                    drive_id,
+                                    path,
+                                ) in self.drive_id_to_local_path.items():
+                                    if path.startswith(old_mount_prefix):
+                                        rel = path[len(old_mount_prefix) :].lstrip(
+                                            os.sep
+                                        )
+                                    elif path.startswith("/"):
+                                        rel = os.path.join(*path.split(os.sep)[3:])
+                                    else:
+                                        rel = path
+                                    new_path = os.path.join(mount, rel)
+                                    new_drive_map[drive_id] = new_path
+                            else:
+                                # Relative paths — prepend the mount point.
+                                old_prefix = sample_key.split(os.sep)[0]
+                                for path, info in self.local_file_info.items():
+                                    if path.startswith(old_prefix):
+                                        new_path = os.path.join(
+                                            mount,
+                                            path[len(old_prefix) + 1 :],
+                                        )
+                                    else:
+                                        new_path = path
+                                    new_file_info[new_path] = info
+                                for (
+                                    drive_id,
+                                    path,
+                                ) in self.drive_id_to_local_path.items():
+                                    if path.startswith(old_prefix):
+                                        new_path = os.path.join(
+                                            mount,
+                                            path[len(old_prefix) + 1 :],
+                                        )
+                                    else:
+                                        new_path = path
+                                    new_drive_map[drive_id] = new_path
+
                             self.local_file_info = new_file_info
                             self.drive_id_to_local_path = new_drive_map
                             self._save_mapping()
@@ -118,14 +209,16 @@ class SyncManager:
         """Check if the loaded mapping references a different sync folder.
 
         Returns True when the mapping contains paths that don't start with
-        the current LOCAL_SYNC_FOLDER, indicating the user changed sync
+        the current config.LOCAL_SYNC_FOLDER, indicating the user changed sync
         folders without clearing the old mapping.
         """
         if not self.local_file_info:
             return False  # Empty mapping — nothing to mismatch
         mapped_paths = list(self.local_file_info.keys())
         # Check if ALL paths are under the current sync folder
-        all_match_current = all(p.startswith(LOCAL_SYNC_FOLDER) for p in mapped_paths)
+        all_match_current = all(
+            p.startswith(config.LOCAL_SYNC_FOLDER) for p in mapped_paths
+        )
         return not all_match_current
 
     def _save_mapping(self):
@@ -162,20 +255,20 @@ class SyncManager:
 
         if (
             not target_local_folder_path
-            or target_local_folder_path == LOCAL_SYNC_FOLDER
+            or target_local_folder_path == config.LOCAL_SYNC_FOLDER
         ):
             # If it's the root sync folder itself, or a file directly in it, parent is 'root'
             return "root"
 
-        # Build up the path components relative to LOCAL_SYNC_FOLDER
+        # Build up the path components relative to config.LOCAL_SYNC_FOLDER
         relative_path_components = []
         temp_path = target_local_folder_path
-        while temp_path and temp_path != LOCAL_SYNC_FOLDER:
+        while temp_path and temp_path != config.LOCAL_SYNC_FOLDER:
             relative_path_components.insert(0, os.path.basename(temp_path))
             temp_path = os.path.dirname(temp_path)
 
         current_drive_parent_id = "root"
-        current_local_folder_path = LOCAL_SYNC_FOLDER
+        current_local_folder_path = config.LOCAL_SYNC_FOLDER
 
         for component in relative_path_components:
             current_local_folder_path = os.path.join(
@@ -655,20 +748,23 @@ class SyncManager:
 
         *local_file_path* is the destination path. When using FUSE, this
         should be a path inside FUSE_CACHE_DIR (typically the cache path).
+
+        Uses a per-thread service from the pool so multiple concurrent
+        downloads proceed in parallel.
         """
         try:
             os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
             # Add to ignore list before writing
             self._sync_in_progress_files.add(local_file_path)
-            with self._drive_api_lock:
-                request = self.drive_service.files().get_media(fileId=drive_file_id)
+
+            svc = self._get_service()
+            request = svc.files().get_media(fileId=drive_file_id)
             fh = io.FileIO(local_file_path, "wb")
             downloader = MediaIoBaseDownload(fh, request)
             done = False
 
             while done is False:
-                with self._drive_api_lock:
-                    status, done = downloader.next_chunk()
+                status, done = downloader.next_chunk()
                 logging.debug(
                     f"Download progress for {os.path.basename(local_file_path)}: {int(status.progress() * 100)}%."
                 )
@@ -700,8 +796,8 @@ class SyncManager:
 
         # Get the current startPageToken before processing changes
         try:
-            with self._drive_api_lock:
-                response = self.drive_service.changes().getStartPageToken().execute()
+            svc = self._get_service()
+            response = svc.changes().getStartPageToken().execute()
             self.last_change_token = response.get("startPageToken")
             logging.info(f"Initial startPageToken obtained: {self.last_change_token}")
         except HttpError as error:
@@ -715,7 +811,7 @@ class SyncManager:
         self._save_mapping()  # Save empty mapping with new token
 
         # Dictionary to map Drive folder IDs to their local paths
-        drive_id_to_local_folder_path = {"root": LOCAL_SYNC_FOLDER}
+        drive_id_to_local_folder_path = {"root": config.LOCAL_SYNC_FOLDER}
 
         # List all files and folders from Drive
         query = "trashed = false"  # Only get non-trashed items
@@ -724,14 +820,12 @@ class SyncManager:
         page_token = None
         while True:
             try:
-                with self._drive_api_lock:
-                    response = (
-                        self.drive_service.files()
-                        .list(
-                            q=query, spaces="drive", fields=fields, pageToken=page_token
-                        )
-                        .execute()
-                    )
+                svc = self._get_service()
+                response = (
+                    svc.files()
+                    .list(q=query, spaces="drive", fields=fields, pageToken=page_token)
+                    .execute()
+                )
 
                 for item in response.get("files", []):
                     drive_id = item["id"]
@@ -824,21 +918,21 @@ class SyncManager:
         page_token = self.last_change_token
         while True:
             try:
-                with self._drive_api_lock:
-                    response = (
-                        self.drive_service.changes()
-                        .list(
-                            pageToken=page_token,
-                            spaces="drive",
-                            fields=(
-                                "nextPageToken, newStartPageToken, "
-                                "changes(fileId, file(id, name, mimeType, "
-                                "parents, trashed, size))"
-                            ),
-                            # Request size
-                        )
-                        .execute()
+                svc = self._get_service()
+                response = (
+                    svc.changes()
+                    .list(
+                        pageToken=page_token,
+                        spaces="drive",
+                        fields=(
+                            "nextPageToken, newStartPageToken, "
+                            "changes(fileId, file(id, name, mimeType, "
+                            "parents, trashed, size))"
+                        ),
+                        # Request size
                     )
+                    .execute()
+                )
 
                 # Update the last_change_token immediately after a successful response
                 self.last_change_token = response.get(
@@ -879,7 +973,7 @@ class SyncManager:
                                 # If parent is not mapped, it means it's a new folder or a folder not yet synced
                                 # For simplicity, we'll assume 'root' if parent is unknown for now.
                                 # A more robust solution would ensure parent folders are created first.
-                                local_parent_path = LOCAL_SYNC_FOLDER
+                                local_parent_path = config.LOCAL_SYNC_FOLDER
                                 logging.warning(
                                     (
                                         f"Remote change: Parent for {name} (ID: {file_id})"

@@ -36,6 +36,39 @@ CACHE_MAX_AGE_SECONDS = 86400  # Evict files untouched for 24 hours
 CACHE_CLEANUP_INTERVAL = 300  # Run LRU cleanup every 5 minutes
 CACHE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB chunks stored as separate files
 
+# Read strategy for sequential/seek-friendly access.
+#
+# STRATEGY: On cache miss, fetch a larger window around the requested
+# position (default 32 MB = 8 chunks). This is fetched as a single HTTP
+# Range request (no overlapping windows) and all contained 4 MB chunks
+# are written to the disk cache. Subsequent reads within that window
+# hit the cache instantly — zero latency for smooth video playback.
+#
+# Additionally, a background pre-fetch thread is triggered when the
+# reader reaches the middle of a cached chunk. This pre-fetches the
+# NEXT window before the player needs it, eliminating stutter in
+# sequential playback.
+#
+# Multiple files can be fetched concurrently (up to MAX_CONCURRENT_FETCHES),
+# but each file's window is fetched atomically. This prevents the old
+# problem of overlapping 16 MB windows from concurrent seeks in the same
+# file causing 50-80 MB/s bandwidth spikes.
+#
+# The window is aligned to chunk boundaries and clamped to file size.
+# Set to 0 to disable windowed fetching (fetch only the needed chunk).
+READAHEAD_WINDOW_CHUNKS = 8  # 8 * 4MB = 32 MB window
+
+# Threshold (0.0-1.0) within a cached chunk that triggers background pre-fetch.
+# 0.5 means: when the reader has consumed 50% of a chunk, start pre-fetching
+# the next one. Higher values mean less aggressive pre-fetching.
+PREFETCH_TRIGGER_THRESHOLD = 0.5
+
+# Maximum number of concurrent Drive API window fetches.
+# Each window fetch uses one slot. 3 allows smooth playback across
+# 3 different files simultaneously (e.g., playing a video while
+# viewing another).
+MAX_CONCURRENT_FETCHES = 3
+
 # --- Scopes ---
 SCOPES = [
     "openid",
@@ -45,13 +78,14 @@ SCOPES = [
 ]
 
 # --- FUSE mount point (network drive) ---
-# Fixed path under the user's home directory. This is where the virtual
-# filesystem is mounted — no user selection, works like /media/gdrive.
-FUSE_MOUNT_POINT = os.path.join(os.path.expanduser("~"), "Gdrive")
+# Dynamic path under the user's home directory. Includes the logged-in email
+# so multiple accounts can be distinguished. Set dynamically in main.py after
+# authentication. Do NOT use before auth completes.
+FUSE_MOUNT_POINT = None  # Set by main.py in _init_auth_only()
 
 # --- LOCAL_SYNC_FOLDER is kept for backward compatibility in the mapping.
 # In pure streaming mode it's identical to FUSE_MOUNT_POINT.
-LOCAL_SYNC_FOLDER = FUSE_MOUNT_POINT
+LOCAL_SYNC_FOLDER = None  # Set to FUSE_MOUNT_POINT after auth
 
 # --- Sync Intervals ---
 REMOTE_SYNC_INTERVAL_SECONDS = 60

@@ -23,10 +23,18 @@ import threading
 
 from fuse import Operations, FuseOSError
 
-from config import LOCAL_SYNC_FOLDER, FUSE_CACHE_DIR, CACHE_CHUNK_SIZE
+import config
+from config import (
+    FUSE_CACHE_DIR,
+    CACHE_CHUNK_SIZE,
+    READAHEAD_WINDOW_CHUNKS,
+    MAX_CONCURRENT_FETCHES,
+    PREFETCH_TRIGGER_THRESHOLD,
+)
 
 from disk_cache import (
     get_chunk,
+    has_chunk,
     put_chunk,
     invalidate_file,
     CacheCleanupThread,
@@ -105,6 +113,7 @@ def _stream_from_drive(
     size: int | None = None,
     populate_cache: bool = False,
     drive_api_lock: threading.Lock | None = None,
+    service_pool=None,
 ) -> io.BytesIO:
     """Download a byte range of file content from Google Drive.
 
@@ -117,6 +126,11 @@ def _stream_from_drive(
     the local disk cache (``~/.cache/gdrive-linux/cache/``) for faster
     re-reads.
 
+    If *service_pool* is provided, the per-thread service from the pool
+    is used for the HTTP request — allowing concurrent FUSE read threads
+    to fetch different chunks in parallel without lock contention.
+    Falls back to *drive_service* if no pool is given.
+
     *drive_api_lock* should be the shared lock from SyncManager; if None,
     falls back to the module-level ``_drive_api_lock`` for backward compat.
 
@@ -125,45 +139,115 @@ def _stream_from_drive(
     """
     from googleapiclient.http import MediaIoBaseDownload
 
-    if drive_api_lock is None:
-        raise ValueError(
-            "drive_api_lock is required. Pass self.sm._drive_api_lock from callers."
-        )
-    lock = drive_api_lock
+    # Use a per-thread service from the pool if available — this is the
+    # key to parallel reads since each thread gets its own HTTP connection.
+    if service_pool is not None:
+        svc = service_pool.get()
+    else:
+        svc = drive_service
+    if svc is None:
+        svc = drive_service
 
     buf = io.BytesIO()
 
     if mime_type in _GOOGLE_DOCS_MIMES:
         # Google Docs export must be fetched in full; range-slice afterwards.
         export_mime = _GOOGLE_DOCS_EXPORT_FORMATS.get(mime_type, "application/pdf")
-        with lock:
-            request = drive_service.files().export(fileId=file_id, mimeType=export_mime)
-            downloader = MediaIoBaseDownload(buf, request)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-        buf.seek(offset)
-        data = buf.read(size) if size is not None else buf.read()
-        return io.BytesIO(data)
-
-    # Regular file — use the google-api-python-client's HttpRequest with
-    # a Range header for ranged reads. This avoids raw requests.get() which
-    # can cause segfaults when called from multiple FUSE threads concurrently.
-    with lock:
-        request = drive_service.files().get_media(fileId=file_id)
-
-        if size is not None and size > 0:
-            # Inject Range header into the HttpRequest before executing it.
-            # google-api-python-client's HttpRequest.headers allows this.
-            range_header = f"bytes={offset}-{offset + size - 1}"
-            request.headers["Range"] = range_header
-
+        request = svc.files().export(fileId=file_id, mimeType=export_mime)
         downloader = MediaIoBaseDownload(buf, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
+        buf.seek(offset)
+        data = buf.read(size) if size is not None else buf.read()
+        return io.BytesIO(data)
+
+    # Regular file — use a direct HTTP request with Range header.
+    # IMPORTANT: We cannot use MediaIoBaseDownload with a manually-set Range
+    # header because the google client library may override or ignore headers
+    # set after request creation. Instead, we execute the request directly
+    # via the underlying HTTP transport, which reliably sends the Range header.
+    request = svc.files().get_media(fileId=file_id)
+
+    if size is not None and size > 0:
+        # Use the authorized HTTP from google client to make a direct
+        # request with Range header. This is more reliable than setting
+        # headers on an HttpRequest and using MediaIoBaseDownload, which
+        # may override custom headers.
+        uri = request.uri
+        http = request.http
+
+        resp, content = http.request(
+            uri,
+            method="GET",
+            headers={"Range": f"bytes={offset}-{offset + size - 1}"},
+        )
+
+        if resp.status == 206:
+            # Partial Content — server respected our Range header
+            buf.write(content)
+        elif resp.status == 200:
+            # Server ignored Range header and returned full content.
+            # Slice out just what we need.
+            log.debug(
+                "Server returned full content (200) instead of partial (206) "
+                "for Range request. Slicing %d bytes at offset %d.",
+                min(size, len(content) - offset),
+                offset,
+            )
+            buf.write(content[offset : offset + size])
+        elif resp.status == 416:
+            # Range Not Satisfiable — file is smaller than requested range
+            log.warning(
+                "Range not satisfiable for %s: offset=%d size=%d (file size may have changed).",
+                file_id,
+                offset,
+                size,
+            )
+            # Try fetching from offset to end
+            resp, content = http.request(
+                uri,
+                method="GET",
+                headers={"Range": f"bytes={offset}-"},
+            )
+            if resp.status in (200, 206):
+                buf.write(content)
+            else:
+                raise IOError(f"HTTP {resp.status}: {resp.reason}")
+        else:
+            raise IOError(f"HTTP {resp.status}: {resp.reason}")
+    else:
+        # No Range header — download the full file
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            try:
+                _, done = downloader.next_chunk()
+            except Exception as e:
+                data = buf.getvalue()
+                if data:
+                    log.debug(
+                        "Partial download: got %d bytes before error: %s",
+                        len(data),
+                        e,
+                    )
+                    done = True
+                    break
+                raise
 
     data = buf.getvalue()
+
+    # Verify we got the requested amount (when using Range header).
+    # Some APIs silently truncate large Range requests.
+    if size is not None and size > 0 and len(data) < size:
+        log.debug(
+            "Range request truncated: requested %d bytes, got %d bytes "
+            "(offset=%d). This is normal near end-of-file or if the API "
+            "has a per-request limit.",
+            size,
+            len(data),
+            offset,
+        )
 
     # Optionally populate cache for this chunk
     if populate_cache and size is not None and size > 0:
@@ -197,10 +281,31 @@ class DriveFS(Operations):
 
     def __init__(self, sync_manager, notify_callback=None, stop_event=None):
         self.sm = sync_manager
+        # Reference to the thread-local service pool for parallel reads.
+        # Passed to _stream_from_drive so each FUSE read thread gets its own
+        # Drive service instance with an independent HTTP connection pool.
+        self._service_pool = getattr(sync_manager, "_service_pool", None)
         # Track file paths that have had write() called (for upload on release)
         self._modified_paths: set[str] = set()
         # Callback for showing notifications (e.g., tray messages)
         self._notify = notify_callback or (lambda msg: None)
+        # Semaphore limiting concurrent Drive API window fetches.
+        # At most MAX_CONCURRENT_FETCHES (default 3) threads can download
+        # simultaneously. Additional readers block until a slot frees up.
+        # Each fetch takes ~0.5-1.5s, so wait times are short and no
+        # video player will receive empty bytes (which would be interpreted as EOF).
+        self._fetch_semaphore = threading.Semaphore(MAX_CONCURRENT_FETCHES)
+
+        # Background pre-fetch tracking.
+        # When a sequential read gets close to the end of cached data, we
+        # launch a background thread to pre-fetch the next window. This
+        # avoids blocking the FUSE read thread when the player reaches it.
+        # Maps: drive_id -> set of chunk indices that are being pre-fetched
+        self._prefetch_in_progress: dict[str, set[int]] = {}
+        self._prefetch_lock = threading.Lock()
+        # Track which file is currently being read sequentially (for pre-fetch).
+        # Maps: drive_id -> last chunk_index read
+        self._last_read_chunk: dict[str, int] = {}
 
         # Start background cache cleanup thread
         self._cache_stop_event = stop_event or threading.Event()
@@ -211,13 +316,19 @@ class DriveFS(Operations):
 
     def _info(self, path: str) -> dict | None:
         """Return the mapping dict for *path*, or None."""
-        full = os.path.join(LOCAL_SYNC_FOLDER, path.lstrip("/"))
+        assert config.LOCAL_SYNC_FOLDER is not None, (
+            "Sync folder must be set before FUSE operations"
+        )
+        full = os.path.join(config.LOCAL_SYNC_FOLDER, path.lstrip("/"))
         with self.sm._mapping_lock:
             return self.sm.local_file_info.get(full)
 
     def _full_path(self, path: str) -> str:
         """Convert a FUSE path (relative to mount) to an absolute local path."""
-        return os.path.join(LOCAL_SYNC_FOLDER, path.lstrip("/"))
+        assert config.LOCAL_SYNC_FOLDER is not None, (
+            "Sync folder must be set before FUSE operations"
+        )
+        return os.path.join(config.LOCAL_SYNC_FOLDER, path.lstrip("/"))
 
     # ---- Filesystem API ----
 
@@ -306,6 +417,9 @@ class DriveFS(Operations):
         No data is fetched here — we just verify the file exists and
         allocate a file handle. Streaming content fetches happen in read().
         """
+        if self._cache_stop_event.is_set():
+            raise FuseOSError(errno.EIO)
+
         info = self._info(path)
         if info is None:
             raise FuseOSError(errno.ENOENT)
@@ -322,9 +436,15 @@ class DriveFS(Operations):
     def read(self, path, size, offset, fh):
         """Read *size* bytes from *offset* by streaming from the Drive API.
 
-        Checks the local disk cache first. On cache miss, fetches the
-        smallest encompassing 4 MB chunk from Google Drive and caches it.
-        Subsequent reads within the same 4 MB region hit the cache.
+        Checks the local disk cache first. On cache miss, tries to acquire
+        a semaphore slot (``MAX_CONCURRENT_FETCHES`` = 3). If a slot is
+        available, fetches a window of ``READAHEAD_WINDOW_CHUNKS`` (default
+        4, i.e. 16 MB) around the requested offset in one HTTP Range request
+        and caches all contained 4 MB chunks.
+
+        If no semaphore slot is available within 3 seconds, returns empty
+        data immediately — the video player will retry the read. This
+        prevents deadlocks when multiple concurrent seeks compete for slots.
 
         Google Docs files are cached in memory (per file handle) since
         they must be exported in full.
@@ -333,6 +453,12 @@ class DriveFS(Operations):
         ``~/.cache/gdrive-linux/cache/<drive_id>/`` with LRU eviction
         managed by a background cleanup thread.
         """
+        # If shutdown is in progress, return empty data immediately rather
+        # than attempting a network call that will fail or segfault.
+        if self._cache_stop_event.is_set():
+            log.debug("Shutdown in progress — returning empty read for '%s'.", path)
+            return b""
+
         info = self._info(path)
         if info is None:
             raise FuseOSError(errno.ENOENT)
@@ -341,6 +467,7 @@ class DriveFS(Operations):
         if not drive_id:
             raise FuseOSError(errno.EIO)
 
+        file_size = int(info.get("size", 0))
         mime_type = info.get("mimeType", "")
         is_doc = mime_type in _GOOGLE_DOCS_MIMES
 
@@ -360,7 +487,7 @@ class DriveFS(Operations):
                         self.sm.drive_service,
                         drive_id,
                         mime_type,
-                        drive_api_lock=self.sm._drive_api_lock,
+                        service_pool=self._service_pool,
                     )
                 except Exception as e:
                     log.error("Failed to export Google Doc '%s': %s", path, e)
@@ -377,9 +504,7 @@ class DriveFS(Operations):
             buf.seek(offset)
             return buf.read(size)
 
-        # Regular binary file — read from disk cache, fetching full 4 MB
-        # chunks from Drive on cache miss. Video players and other sequential
-        # readers benefit from full-chunk caching rather than per-call ranges.
+        # Regular binary file — read from disk cache
         chunk_index = offset // CACHE_CHUNK_SIZE
         chunk_offset = offset % CACHE_CHUNK_SIZE
 
@@ -395,35 +520,344 @@ class DriveFS(Operations):
                     chunk_offset,
                     size,
                 )
+                # Trigger pre-fetch of next chunk if we've read past the threshold
+                # within this chunk. This gives the background fetch time to
+                # complete before the player needs the next chunk.
+                try:
+                    if chunk_offset + size >= len(cached) * PREFETCH_TRIGGER_THRESHOLD:
+                        self._trigger_prefetch(path, drive_id, file_size, chunk_index)
+                except Exception:
+                    log.debug("Prefetch trigger failed (non-fatal)", exc_info=True)
                 return cached[chunk_offset:end_offset]
+            else:
+                # Request spans beyond this cached chunk — we need the next chunk too.
+                # Fall through to fetch logic below. But first, serve what we can
+                # from cache so the semaphore slot isn't wasted on a partial hit.
+                log.debug(
+                    "Cache HIT (partial) '%s' chunk=%d — read spans beyond chunk boundary, "
+                    "falling through to fetch next chunk",
+                    path,
+                    chunk_index,
+                )
+                # Return what we have from cache — the caller (kernel) will re-read
+                # the rest. This prevents short reads from confusing video players.
+                partial = cached[chunk_offset:]
+                if len(partial) > 0:
+                    return partial
+                # If cached chunk is somehow empty, fall through to fetch.
 
-        # Cache miss — fetch the full 4 MB chunk from Drive
+        # Cache miss — acquire a semaphore slot to limit concurrent fetches.
+        # Block indefinitely (no timeout) because returning empty bytes would
+        # cause video players to interpret it as EOF and reset playback to 00:00.
+        # The semaphore limits to MAX_CONCURRENT_FETCHES (default 3), so at most
+        # 3 threads will block here, and each fetch takes ~0.5-1.5s.
         log.debug(
-            "Cache MISS '%s' chunk=%d — fetching %d bytes from Drive",
+            "Cache MISS '%s' chunk=%d (offset=%d, size=%d) — waiting for fetch slot...",
             path,
             chunk_index,
-            CACHE_CHUNK_SIZE,
+            chunk_offset,
+            size,
         )
+        self._fetch_semaphore.acquire()
+
+        try:
+            result = self._read_with_readahead(
+                path, drive_id, file_size, chunk_index, chunk_offset, size
+            )
+            if len(result) == 0:
+                log.info(
+                    "Read '%s' offset=%d size=%d -> 0 bytes (EOF or past EOF)",
+                    path,
+                    offset,
+                    size,
+                )
+            # Trigger pre-fetch of the next chunk (the read-ahead already
+            # did this, but this ensures it happens even for cache-already paths)
+            try:
+                self._trigger_prefetch(path, drive_id, file_size, chunk_index)
+            except Exception:
+                log.debug("Prefetch trigger failed (non-fatal)", exc_info=True)
+            return result
+        finally:
+            self._fetch_semaphore.release()
+
+    def _trigger_prefetch(
+        self,
+        path: str,
+        drive_id: str,
+        file_size: int,
+        just_read_chunk: int,
+    ):
+        """Launch a background thread to pre-fetch the next window."""
+        if file_size <= 0:
+            return
+        total_chunks = (file_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
+        next_chunk = just_read_chunk + 1
+        if next_chunk >= total_chunks:
+            return
+        # Check if already cached or already being pre-fetched
+        if has_chunk(drive_id, next_chunk):
+            return
+        with self._prefetch_lock:
+            if drive_id in self._prefetch_in_progress:
+                if next_chunk in self._prefetch_in_progress[drive_id]:
+                    return
+                self._prefetch_in_progress[drive_id].add(next_chunk)
+            else:
+                self._prefetch_in_progress[drive_id] = {next_chunk}
+
+        # Launch background pre-fetch thread
+        t = threading.Thread(
+            target=self._prefetch_worker,
+            args=(path, drive_id, file_size, next_chunk),
+            daemon=True,
+        )
+        t.start()
+
+    def _prefetch_worker(
+        self,
+        path: str,
+        drive_id: str,
+        file_size: int,
+        chunk_index: int,
+    ):
+        """Background thread: pre-fetch a window starting at chunk_index."""
+        try:
+            # Clean up tracking when done
+            try:
+                if not self._fetch_semaphore.acquire(timeout=5):
+                    log.debug(
+                        "Prefetch timed out waiting for slot for '%s' chunk %d.",
+                        path,
+                        chunk_index,
+                    )
+                    return
+            except (ValueError, AttributeError):
+                return
+
+            try:
+                # Use the same read-ahead logic but fetch starting from this chunk
+                self._do_background_fetch(path, drive_id, file_size, chunk_index)
+            finally:
+                self._fetch_semaphore.release()
+        finally:
+            with self._prefetch_lock:
+                if drive_id in self._prefetch_in_progress:
+                    self._prefetch_in_progress[drive_id].discard(chunk_index)
+                    if not self._prefetch_in_progress[drive_id]:
+                        del self._prefetch_in_progress[drive_id]
+
+    def _do_background_fetch(
+        self,
+        path: str,
+        drive_id: str,
+        file_size: int,
+        chunk_index: int,
+    ):
+        """Fetch a window for pre-fetching and cache it."""
+        total_chunks = (file_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
+        start_chunk = chunk_index
+        end_chunk = min(total_chunks, start_chunk + READAHEAD_WINDOW_CHUNKS)
+        # Clamp to file size
+        window_offset = start_chunk * CACHE_CHUNK_SIZE
+        window_size = (end_chunk - start_chunk) * CACHE_CHUNK_SIZE
+        if window_offset + window_size > file_size:
+            window_size = file_size - window_offset
+            if window_size <= 0:
+                return
         try:
             buf = _stream_from_drive(
                 self.sm.drive_service,
                 drive_id,
-                mime_type,
-                offset=chunk_index * CACHE_CHUNK_SIZE,
-                size=CACHE_CHUNK_SIZE,
-                populate_cache=True,
-                drive_api_lock=self.sm._drive_api_lock,
+                "",
+                offset=window_offset,
+                size=window_size,
+                populate_cache=False,
+                service_pool=self._service_pool,
             )
-            chunk_data = buf.read()
+            window_data = buf.read()
         except Exception as e:
-            log.error("Failed to read '%s' from Drive: %s", path, e)
+            log.debug("Prefetch failed for '%s' chunk %d: %s", path, chunk_index, e)
+            return
+        actual_size = len(window_data)
+        num_chunks = (actual_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
+        for i in range(num_chunks):
+            cs = i * CACHE_CHUNK_SIZE
+            ce = min(cs + CACHE_CHUNK_SIZE, actual_size)
+            if ce > cs:
+                chunk_data = window_data[cs:ce]
+                if len(chunk_data) > 0:
+                    put_chunk(drive_id, start_chunk + i, chunk_data)
+        log.info(
+            "Prefetched %d-chunk window for '%s' (chunks %d-%d) in background.",
+            end_chunk - start_chunk,
+            path,
+            start_chunk,
+            end_chunk - 1,
+        )
+
+    def _read_with_readahead(
+        self,
+        path: str,
+        drive_id: str,
+        file_size: int,
+        chunk_index: int,
+        chunk_offset: int,
+        size: int,
+    ) -> bytes:
+        """Fetch a window around the requested chunk and cache it.
+
+        Strategy (solves video seek bandwidth/memory problem):
+        Fetch a single larger window (READAHEAD_WINDOW_CHUNKS * 4MB = 32 MB
+        by default) around the seek position in one HTTP Range request.
+        Write all contained 4 MB chunks to disk cache.
+
+        Why this works for video seeking:
+        - The 100 MB/s bandwidth spike was caused by MULTIPLE overlapping
+          16 MB windows from concurrent seeks. With a semaphore limiting
+          to 3 concurrent fetches, at most 3 windows (96 MB total) can be
+          in-flight, and they're for different files — not overlapping.
+        - A 32 MB window at 100 Mbps takes ~2.5 seconds to download, during
+          which the video player can read from cache without further network
+          calls.
+        - The window is aligned to chunk boundaries so no overlaps occur
+          within the same file.
+        """
+        total_chunks = (file_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
+
+        if READAHEAD_WINDOW_CHUNKS <= 0:
+            # Windowed fetching disabled — fetch just the requested chunk
+            urgent_offset = chunk_index * CACHE_CHUNK_SIZE
+            urgent_size = min(CACHE_CHUNK_SIZE, file_size - urgent_offset)
+            try:
+                buf = _stream_from_drive(
+                    self.sm.drive_service,
+                    drive_id,
+                    "",
+                    offset=urgent_offset,
+                    size=urgent_size,
+                    populate_cache=True,
+                    service_pool=self._service_pool,
+                )
+                chunk_data = buf.read()
+            except Exception as e:
+                log.error("Failed to read '%s' from Drive: %s", path, e)
+                raise FuseOSError(errno.EIO) from e
+            if chunk_offset + size <= len(chunk_data):
+                return chunk_data[chunk_offset : chunk_offset + size]
+            return chunk_data[chunk_offset:]
+
+        # Calculate the window: centered on the requested chunk, aligned
+        # to chunk boundaries.
+        half_window = READAHEAD_WINDOW_CHUNKS // 2
+        start_chunk = max(0, chunk_index - half_window)
+        end_chunk = min(total_chunks, start_chunk + READAHEAD_WINDOW_CHUNKS)
+
+        # If we're near the end, shift the window left so we still get
+        # READAHEAD_WINDOW_CHUNKS worth of data (if available).
+        if end_chunk - start_chunk < READAHEAD_WINDOW_CHUNKS and start_chunk > 0:
+            start_chunk = max(0, end_chunk - READAHEAD_WINDOW_CHUNKS)
+
+        window_offset = start_chunk * CACHE_CHUNK_SIZE
+        window_size = (end_chunk - start_chunk) * CACHE_CHUNK_SIZE
+
+        # Clamp window_size to actual remaining file bytes.
+        # Without this, the Range header may request bytes beyond EOF,
+        # causing Google Drive to return 416 Range Not Satisfiable.
+        if window_offset + window_size > file_size:
+            window_size = file_size - window_offset
+            # Recalculate end_chunk for cache population
+            end_chunk = (
+                start_chunk + (window_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
+            )
+
+        log.debug(
+            "Cache MISS '%s' chunk=%d — fetching %d-chunk window "
+            "[chunks %d-%d, %d bytes at offset %d]",
+            path,
+            chunk_index,
+            end_chunk - start_chunk,
+            start_chunk,
+            end_chunk - 1,
+            window_size,
+            window_offset,
+        )
+
+        fetch_start = time.time()
+
+        try:
+            # Fetch the full window in a single ranged request.
+            buf = _stream_from_drive(
+                self.sm.drive_service,
+                drive_id,
+                "",
+                offset=window_offset,
+                size=window_size,
+                populate_cache=False,  # We'll populate cache manually
+                service_pool=self._service_pool,
+            )
+            window_data = buf.read()
+        except Exception as e:
+            log.error(
+                "Failed to read '%s' (window [%d, %d)) from Drive: %s",
+                path,
+                window_offset,
+                window_offset + window_size,
+                e,
+            )
             raise FuseOSError(errno.EIO) from e
 
-        # If the requested range extends beyond what we got, return what we have
-        if chunk_offset + size <= len(chunk_data):
-            return chunk_data[chunk_offset : chunk_offset + size]
+        # Write all contained chunks to the disk cache
+        actual_size = len(window_data)
+        num_chunks = (actual_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
+        for i in range(num_chunks):
+            chunk_start = i * CACHE_CHUNK_SIZE
+            chunk_end = min(chunk_start + CACHE_CHUNK_SIZE, actual_size)
+            if chunk_end > chunk_start:
+                chunk_data = window_data[chunk_start:chunk_end]
+                chunk_idx = start_chunk + i
+                # Only cache non-empty chunks
+                if len(chunk_data) > 0:
+                    put_chunk(drive_id, chunk_idx, chunk_data)
+
+        elapsed = time.time() - fetch_start
+        log.info(
+            "Fetched %d-chunk window for '%s' in %.2fs (%.1f MB, %.1f MB/s). "
+            "Servicing chunk %d at offset %d.",
+            end_chunk - start_chunk,
+            path,
+            elapsed,
+            actual_size / (1024 * 1024),
+            actual_size / (1024 * 1024) / max(elapsed, 0.001),
+            chunk_index,
+            chunk_offset,
+        )
+
+        # If the window data is significantly smaller than requested, log a warning
+        if window_size > 0 and actual_size < window_size * 0.9:
+            log.warning(
+                "Window fetch returned only %d of %d requested bytes "
+                "for '%s' (offset=%d). API may have per-request limit.",
+                actual_size,
+                window_size,
+                path,
+                window_offset,
+            )
+
+        # Extract the requested range from the window data
+        relative_offset = (chunk_index - start_chunk) * CACHE_CHUNK_SIZE + chunk_offset
+        if relative_offset + size <= actual_size:
+            result = window_data[relative_offset : relative_offset + size]
         else:
-            return chunk_data[chunk_offset:]
+            result = window_data[relative_offset:]
+
+        # Trigger pre-fetch of the next window beyond this one
+        try:
+            self._trigger_prefetch(path, drive_id, file_size, end_chunk - 1)
+        except Exception:
+            log.debug("Prefetch trigger failed (non-fatal)", exc_info=True)
+
+        return result
 
     # ---- File create / write ----
 

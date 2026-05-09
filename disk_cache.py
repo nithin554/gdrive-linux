@@ -150,6 +150,40 @@ def get_cache_size() -> int:
     return total
 
 
+def clear_cache() -> int:
+    """Remove ALL cached chunks and reset the index.
+
+    Returns the number of bytes that were freed.
+    """
+    import shutil
+
+    with _index_lock:
+        freed = sum(
+            info.get("size", 0)
+            for chunks in _index.values()
+            for info in chunks.values()
+        )
+        _index.clear()
+        _save_index()
+
+    # Remove all cache directories
+    if os.path.isdir(CACHE_DIR):
+        for entry in os.listdir(CACHE_DIR):
+            path = os.path.join(CACHE_DIR, entry)
+            if entry == "index.json":
+                continue
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                else:
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError as e:
+                log.warning("Failed to remove cache entry '%s': %s", entry, e)
+
+    log.info("Cleared entire cache (%d bytes freed).", freed)
+    return freed
+
+
 # ---------------------------------------------------------------------------
 # Background cleanup thread
 # ---------------------------------------------------------------------------

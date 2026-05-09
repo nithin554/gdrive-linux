@@ -182,6 +182,7 @@ jobs:
           fi
           if [[ "${{ matrix.build-arch }}" == "true" ]]; then
             chown -R builder:builder .
+            sudo -u builder mkdir -p "${ARTIFACT_DIR}"
             sudo -u builder bash .github/scripts/package-arch.sh "${VERSION}" "dist/gdrive-linux" "${ARTIFACT_DIR}"
           fi
           if [[ "${{ matrix.build-appimage }}" == "true" ]]; then
