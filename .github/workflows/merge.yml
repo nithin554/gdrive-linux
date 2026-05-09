@@ -197,6 +197,7 @@ jobs:
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
           mkdir -p /tmp/packages
+          chown builder:builder /tmp/packages
           chown -R builder:builder .
           sudo -u builder bash .github/scripts/package-arch.sh "${VERSION}" "dist/gdrive-linux" "/tmp/packages"
 

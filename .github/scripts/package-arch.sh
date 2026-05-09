@@ -73,7 +73,8 @@ rm -rf "gdrive-linux-${ARCH_VERSION}"
 # Build
 makepkg -c --noconfirm
 
-# Copy result
+# Copy result — ensure output dir exists and is writable
+mkdir -p "${OUTPUT_DIR}"
 cp gdrive-linux-*.pkg.tar.zst "${OUTPUT_DIR}/"
 rm -rf "${PKGDIR}" PKGBUILD gdrive-linux-*.tar.gz
 

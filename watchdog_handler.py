@@ -4,8 +4,8 @@ import threading
 
 from watchdog.events import FileSystemEventHandler
 
+import config
 from sync_manager import SyncManager
-from config import LOCAL_SYNC_FOLDER
 
 # Debounce window in seconds — coalesces rapid file change events
 # (e.g., text editor saves, repeated writes) into a single action
@@ -31,8 +31,8 @@ class DriveSyncEventHandler(FileSystemEventHandler):
 
     @staticmethod
     def _get_relative_path(absolute_path):
-        """Converts an absolute path to a path relative to the LOCAL_SYNC_FOLDER."""
-        return os.path.relpath(absolute_path, LOCAL_SYNC_FOLDER)
+        """Converts an absolute path to a path relative to the config.LOCAL_SYNC_FOLDER."""
+        return os.path.relpath(absolute_path, config.LOCAL_SYNC_FOLDER)
 
     def _debounce(self, path: str, callback):
         """Cancel any pending timer for *path* and schedule *callback* after debounce delay."""

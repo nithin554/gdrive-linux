@@ -1,9 +1,9 @@
 """
 gdrive-linux: Native Linux Google Drive network drive.
 
-Mounts a FUSE virtual filesystem at ~/Gdrive that presents Google Drive
-as a pure streaming network drive — zero local storage, reads stream
-from the Drive API, writes upload on close.
+Mounts a FUSE virtual filesystem at ~/Google Drive (<email>) that presents
+Google Drive as a pure streaming network drive — zero local storage, reads
+stream from the Drive API, writes upload on close.
 """
 
 import os
@@ -17,12 +17,11 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from config import (
-    FUSE_MOUNT_POINT,
-    REMOTE_SYNC_INTERVAL_SECONDS,
-)
-from auth import authenticate_google_drive
+import config
+from config import REMOTE_SYNC_INTERVAL_SECONDS
+from auth import authenticate_google_drive, get_user_email
 from sync_manager import SyncManager
+from drive_service_pool import DriveServicePool
 from fuse_drive import DriveFS
 from sync_threads import RemoteSyncThread
 from gui_elements import SettingsWindow, SystemTrayIcon
@@ -107,6 +106,7 @@ class SyncApp(QApplication):
         self.setQuitOnLastWindowClosed(False)
 
         self.drive_service = None
+        self._service_pool = None
         self.sync_manager = None
         self._fuse_thread = None
         self._fuse_connection = None
@@ -147,6 +147,20 @@ class SyncApp(QApplication):
             self.quit()
             return
 
+        # Set the mount point to include the authenticated user's email.
+        # This allows distinguishing multiple Google Drive accounts by mount path.
+        user_email = get_user_email(creds)
+        if user_email:
+            mount_dir_name = f"Google Drive ({user_email})"
+        else:
+            logging.warning(
+                "Could not fetch user email. Falling back to 'Google Drive'."
+            )
+            mount_dir_name = "Google Drive"
+        config.FUSE_MOUNT_POINT = os.path.join(os.path.expanduser("~"), mount_dir_name)
+        config.LOCAL_SYNC_FOLDER = config.FUSE_MOUNT_POINT
+        logging.info("FUSE mount point set to: %s", config.FUSE_MOUNT_POINT)
+
     def _mount_fuse(self):
         """Mount the FUSE filesystem in a background thread.
 
@@ -156,7 +170,7 @@ class SyncApp(QApplication):
         permission error), the error is logged and a tray notification
         is shown rather than silently pretending the drive is available.
         """
-        mount_point = FUSE_MOUNT_POINT
+        mount_point = config.FUSE_MOUNT_POINT
 
         # Ensure the mount point directory exists (as a regular directory)
         if not os.path.exists(mount_point):
@@ -176,7 +190,7 @@ class SyncApp(QApplication):
                     len(leftover_items),
                 )
                 self._on_tray_message(
-                    f"~/Gdrive contains {len(leftover_items)} leftover items from a "
+                    f"Mount point contains {len(leftover_items)} leftover items from a "
                     "previous failed mount. FUSE will mount over them now."
                 )
 
@@ -191,16 +205,16 @@ class SyncApp(QApplication):
             time.sleep(0.5)
 
         # Create DriveFS with a notification callback for delete warnings
-        def _notify(msg: str):
-            logging.warning("FUSE notification: %s", msg)
-            self._on_tray_message(msg)
-
         fs = DriveFS(
-            self.sync_manager, notify_callback=_notify, stop_event=self.stop_event
+            self.sync_manager,
+            notify_callback=self._notify_from_fuse,
+            stop_event=self.stop_event,
         )
 
-        # Use an Event to signal mount success/failure from the FUSE thread.
-        # This avoids a race-prone time.sleep() + ismount() check.
+        # Use a combination of Event and ismount() polling to detect mount.
+        # _FUSE() with foreground=True blocks forever (it enters the FUSE
+        # event loop), so mount_event only fires on unmount. We poll
+        # ismount() in a short loop instead.
         mount_event = threading.Event()
         fuse_error = []
 
@@ -214,6 +228,7 @@ class SyncApp(QApplication):
                     foreground=True,
                     allow_other=False,
                     nonempty=True,
+                    direct_io=True,
                 )
             except Exception as e:
                 fuse_error.append(e)
@@ -224,29 +239,37 @@ class SyncApp(QApplication):
         self._fuse_thread = threading.Thread(target=_run_fuse, daemon=True)
         self._fuse_thread.start()
 
-        # Wait for the FUSE thread to either complete (error) or mount.
-        # fusepy's FUSE() constructor blocks until mount succeeds or fails,
-        # so once mount_event is set, we have a definitive answer.
-        mount_event.wait(timeout=10.0)
+        # Poll for mount completion (ismount) rather than waiting for the
+        # FUSE thread to exit — which won't happen until unmount.
+        # Typical FUSE mount takes 1-3 seconds on this system.
+        mount_ok = False
+        for _ in range(50):  # poll for up to 5 seconds (100ms intervals)
+            mount_event.wait(timeout=0.1)
+            if mount_event.is_set():
+                # Thread exited — mount either succeeded or failed. If it
+                # failed, fuse_error will have the exception.
+                break
+            if os.path.ismount(mount_point):
+                mount_ok = True
+                break
 
         if fuse_error:
             error_msg = str(fuse_error[0])
             logging.error("FUSE mount error: %s", error_msg)
             self._on_tray_message(
                 f"FUSE mount failed: {error_msg[:100]}. "
-                "Check that libfuse2 is installed and ~/Gdrive is not in use."
+                "Check that libfuse2 is installed and the mount point is not in use."
             )
             return False
 
-        # Verify the mount actually took effect
-        if not os.path.ismount(mount_point):
+        if not mount_ok and not os.path.ismount(mount_point):
+            # timed out and still not mounted
             logging.error(
-                "FUSE thread signalled success but %s is not a mount point. "
-                "FUSE may have failed silently.",
+                "FUSE mount timed out after 5 seconds — %s is not a mount point.",
                 mount_point,
             )
             self._on_tray_message(
-                "FUSE mount failed silently. Try running: fusermount -uz ~/Gdrive"
+                "FUSE mount is taking unusually long. Check that libfuse2 is installed."
             )
             return False
 
@@ -260,7 +283,7 @@ class SyncApp(QApplication):
         (``fusermount -uz``) if the device is busy — for example when the
         FUSE thread hasn't fully exited yet.
         """
-        mount_point = FUSE_MOUNT_POINT
+        mount_point = config.FUSE_MOUNT_POINT
         if not os.path.ismount(mount_point):
             return
 
@@ -325,19 +348,28 @@ class SyncApp(QApplication):
             return
 
         # 1. Ensure the mount point directory exists
-        if not os.path.exists(FUSE_MOUNT_POINT):
-            os.makedirs(FUSE_MOUNT_POINT)
-            logging.info("Created FUSE mount point: %s", FUSE_MOUNT_POINT)
+        if not os.path.exists(config.FUSE_MOUNT_POINT):
+            os.makedirs(config.FUSE_MOUNT_POINT)
+            logging.info("Created FUSE mount point: %s", config.FUSE_MOUNT_POINT)
 
-        # 2. Initialize SyncManager
-        self.sync_manager = SyncManager(self.drive_service)
+        # 2. Create the thread-local service pool for parallel reads.
+        # Each FUSE read thread gets its own Drive service instance with an
+        # independent HTTP connection, eliminating lock contention.
+        self._service_pool = DriveServicePool(
+            get_credentials=lambda: authenticate_google_drive()
+        )
 
-        # 3. Check if mapping is stale (e.g., from a previous sync folder)
+        # 3. Initialize SyncManager with the pool
+        self.sync_manager = SyncManager(
+            self.drive_service, service_pool=self._service_pool
+        )
+
+        # 4. Check if mapping is stale (e.g., from a previous sync folder)
         if self.sync_manager.is_mapping_for_other_folder():
             logging.warning(
                 "Mapping references a different path than %s. "
                 "Re-initializing with fresh mapping.",
-                FUSE_MOUNT_POINT,
+                config.FUSE_MOUNT_POINT,
             )
             self.sync_manager.initial_sync_from_drive()
         elif not self.sync_manager.last_change_token:
@@ -348,18 +380,19 @@ class SyncApp(QApplication):
                 "Will check for remote changes."
             )
 
-        # 4. Mount FUSE filesystem
+        # 5. Mount FUSE filesystem
+        self._on_tray_message("Mounting Google Drive...")
         if not self._mount_fuse():
             logging.error(
                 "FUSE mount failed. Sync cannot proceed without the virtual filesystem."
             )
             self._on_tray_message(
-                f"Failed to mount FUSE at {FUSE_MOUNT_POINT}. "
+                f"Failed to mount FUSE at {config.FUSE_MOUNT_POINT}. "
                 "Check that libfuse2 is installed."
             )
             return
 
-        # 5. Start remote sync thread
+        # 6. Start remote sync thread
         self.remote_sync_thread = RemoteSyncThread(self.sync_manager, self.stop_event)
         self.remote_sync_thread.sync_status_signal.connect(self._on_tray_message)
         self.remote_sync_thread.start()
@@ -369,7 +402,7 @@ class SyncApp(QApplication):
         )
 
         self._sync_started = True
-        self._on_tray_message(f"Google Drive mounted at {FUSE_MOUNT_POINT}")
+        self._on_tray_message(f"Google Drive mounted at {config.FUSE_MOUNT_POINT}")
 
     def stop_sync(self):
         """Stop all sync components."""
@@ -379,14 +412,30 @@ class SyncApp(QApplication):
         logging.info("Stopping sync...")
         self.stop_event.set()
 
+        # 1. Unmount FUSE first — this signals fusepy to stop and the FUSE
+        # thread to exit. After this, no new FUSE read() calls will arrive.
         self._unmount_fuse()
 
+        # 2. Stop remote sync thread
         if self.remote_sync_thread and self.remote_sync_thread.isRunning():
             self.remote_sync_thread.quit()
             self.remote_sync_thread.wait()
 
+        # 3. Wait a moment for any in-flight FUSE read requests to drain.
+        # fusermount -u returns before the FUSE thread fully exits, and
+        # lingering read() calls may still be executing. The stop_event
+        # prevents DriveFS from initiating new network requests.
+        time.sleep(0.5)
+
+        # 4. Now it's safe to close all HTTP connections.
+        if self._service_pool:
+            self._service_pool.dispose_all()
+
         self._sync_started = False
-        self.stop_event.clear()
+        # Intentionally do NOT clear stop_event — lingering FUSE read calls
+        # that arrive after dispose_all() would attempt to use closed HTTP
+        # connections and crash. The stop_event stays set until the app
+        # restarts (a new SyncApp is created).
         logging.info("Sync stopped.")
 
     def _init_tray_icon(self):
@@ -394,9 +443,33 @@ class SyncApp(QApplication):
         self.tray_icon = SystemTrayIcon(sync_app=self)
 
     def _on_tray_message(self, message):
-        """Show a tray notification."""
+        """Show a tray notification from the main Qt thread.
+
+        This is called either from the Qt signal/slot system (remote sync
+        thread signal connected as a Qt slot — already on the main thread)
+        or directly from the FUSE notification callback.
+        In either case, call the QSystemTrayIcon directly.
+        """
         if self.tray_icon:
             self.tray_icon._show_tray_message(message)
+
+    def _notify_from_fuse(self, msg: str):
+        """FUSE notification callback — dispatches to main Qt thread.
+
+        FUSE runs on background threads, but Qt GUI calls must originate
+        from the main thread. Uses ``QMetaObject.invokeMethod`` to queue
+        the tray message on the Qt event loop.
+        """
+        logging.warning("FUSE notification: %s", msg)
+        if self.tray_icon:
+            from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+
+            QMetaObject.invokeMethod(
+                self.tray_icon,
+                "_show_tray_message",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, msg),
+            )
 
     def open_sync_folder(self):
         """Open the mount point in the file manager."""

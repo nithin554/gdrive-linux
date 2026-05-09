@@ -16,8 +16,10 @@ from PyQt6.QtWidgets import (
     QCheckBox,
 )
 from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtCore import pyqtSlot
 
-from config import FUSE_MOUNT_POINT, TOKEN_FILE, SCOPES
+import config
+from config import TOKEN_FILE, SCOPES, CACHE_MAX_SIZE_MB, MAPPING_FILE, SETTINGS_FILE
 from auth import get_user_email, logout_google_account, reauthenticate_google_drive
 from autostart import is_autostart_enabled, enable_autostart, disable_autostart
 
@@ -27,7 +29,7 @@ class SettingsWindow(QMainWindow):
         super().__init__()
         self.sync_app = sync_app
         self.setWindowTitle("gdrive-linux Settings")
-        self.setGeometry(100, 100, 400, 250)
+        self.setGeometry(100, 100, 420, 360)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -36,7 +38,7 @@ class SettingsWindow(QMainWindow):
 
         # Mount point info
         layout.addWidget(QLabel("<b>Network Drive Location:</b>"))
-        mount_label = QLabel(FUSE_MOUNT_POINT)
+        mount_label = QLabel(config.FUSE_MOUNT_POINT)
         mount_label.setWordWrap(True)
         layout.addWidget(mount_label)
 
@@ -68,7 +70,162 @@ class SettingsWindow(QMainWindow):
         self.autostart_checkbox.toggled.connect(self._toggle_autostart)
         layout.addWidget(self.autostart_checkbox)
 
+        # --- Cache section ---
+        layout.addSpacing(10)
+        cache_header = QLabel("<b>Disk Cache:</b>")
+        layout.addWidget(cache_header)
+
+        self.cache_size_label = QLabel(self._format_cache_size())
+        self.cache_size_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.cache_size_label)
+
+        clear_cache_btn = QPushButton("Clear Cache")
+        clear_cache_btn.clicked.connect(self._clear_cache)
+        layout.addWidget(clear_cache_btn)
+
+        # --- Reset section ---
+        layout.addSpacing(10)
+        reset_header = QLabel("<b>Reset Application:</b>")
+        layout.addWidget(reset_header)
+        reset_desc = QLabel(
+            "Clears cache, mapping, settings, and logs you out. "
+            "Use this if the app gets into a broken state."
+        )
+        reset_desc.setWordWrap(True)
+        reset_desc.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(reset_desc)
+
+        reset_btn = QPushButton("Reset All Data")
+        reset_btn.setStyleSheet(
+            "QPushButton { color: white; background-color: #c0392b; font-weight: bold; "
+            "padding: 6px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #e74c3c; }"
+        )
+        reset_btn.clicked.connect(self._reset_application)
+        layout.addWidget(reset_btn)
+
         layout.addStretch()
+
+    def _format_cache_size(self) -> str:
+        try:
+            from disk_cache import get_cache_size
+
+            size_bytes = get_cache_size()
+            if size_bytes < 1024:
+                return f"Cache size: {size_bytes} B (limit: {CACHE_MAX_SIZE_MB} MB)"
+            elif size_bytes < 1024 * 1024:
+                return f"Cache size: {size_bytes / 1024:.1f} KB (limit: {CACHE_MAX_SIZE_MB} MB)"
+            else:
+                return f"Cache size: {size_bytes / (1024 * 1024):.1f} MB (limit: {CACHE_MAX_SIZE_MB} MB)"
+        except Exception as e:
+            logging.error("Error reading cache size: %s", e)
+            return "Cache size: unknown"
+
+    def _clear_cache(self):
+        reply = QMessageBox.question(
+            self,
+            "Clear Cache",
+            "Are you sure you want to clear the disk cache?\n"
+            "Cached file chunks will need to be re-downloaded from Google Drive.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                from disk_cache import clear_cache
+
+                freed = clear_cache()
+                freed_mb = freed / (1024 * 1024)
+                self.cache_size_label.setText(self._format_cache_size())
+                QMessageBox.information(
+                    self,
+                    "Cache Cleared",
+                    f"Cleared {freed_mb:.1f} MB of cached data.\n"
+                    "Files will be re-fetched from Google Drive as needed.",
+                )
+                logging.info("Cache cleared manually (%d bytes freed).", freed)
+            except Exception as e:
+                logging.error("Failed to clear cache: %s", e)
+                QMessageBox.warning(
+                    self,
+                    "Error",
+                    f"Failed to clear cache: {e}",
+                )
+
+    def _reset_application(self):
+        """Reset all application data and log out.
+
+        Clears:
+        - Disk cache (downloaded file chunks)
+        - Sync mapping (drive file index)
+        - Settings (window prefs, autostart flag)
+        - OAuth token (logged-in Google account)
+
+        The user will need to re-authenticate on next launch.
+        """
+        reply = QMessageBox.warning(
+            self,
+            "Reset All Data",
+            "This will delete ALL local application data:\n\n"
+            "• Disk cache (downloaded file chunks)\n"
+            "• Sync mapping (file index)\n"
+            "• Settings\n"
+            "• Google account login (token)\n\n"
+            "After reset, the app will log you out and you'll need to "
+            "sign in again on next launch.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Double-check with the user
+        confirm = QMessageBox.warning(
+            self,
+            "Are you sure?",
+            "This cannot be undone. All cached data and settings will be lost.\n\n"
+            "Proceed with reset?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        logging.info("Starting application reset...")
+
+        # 1. Stop sync (unmounts FUSE, stops threads)
+        self.sync_app.stop_sync()
+
+        # 2. Clear disk cache
+        try:
+            from disk_cache import clear_cache
+
+            clear_cache()
+            logging.info("Cache cleared during reset.")
+        except Exception as e:
+            logging.warning("Failed to clear cache during reset: %s", e)
+
+        # 3. Delete mapping file
+        for file_path in [MAPPING_FILE, SETTINGS_FILE, TOKEN_FILE]:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logging.info("Deleted: %s", file_path)
+            except Exception as e:
+                logging.warning("Failed to delete %s: %s", file_path, e)
+
+        # 4. Update UI
+        self.cache_size_label.setText(self._format_cache_size())
+        self.update_google_account_status()
+
+        QMessageBox.information(
+            self,
+            "Reset Complete",
+            "All application data has been cleared.\n\n"
+            "The app will log you out and you can sign in again "
+            "on the next launch.",
+        )
+        logging.info("Application reset complete.")
 
     def _logout_google_account(self):
         reply = QMessageBox.question(
@@ -211,13 +368,38 @@ class SystemTrayIcon(QSystemTrayIcon):
         menu.addAction(self.email_action)
         menu.addSeparator()
 
-        open_folder_action = QAction(f"Open {os.path.basename(FUSE_MOUNT_POINT)}", self)
+        # Cache info and clear action
+        self.cache_action = QAction("", self)
+        self.cache_action.setEnabled(False)
+        menu.addAction(self.cache_action)
+        self._update_cache_action()
+
+        clear_cache_action = QAction("Clear Cache", self)
+        clear_cache_action.triggered.connect(self._clear_cache_from_tray)
+        menu.addAction(clear_cache_action)
+        menu.addSeparator()
+
+        # Refresh cache display when the menu opens
+        menu.aboutToShow.connect(self._update_cache_action)
+
+        # Refresh cache display every 5 seconds while menu is open
+        self._cache_refresh_timer = None
+
+        open_folder_action = QAction(
+            f"Open {os.path.basename(config.FUSE_MOUNT_POINT)}", self
+        )
         open_folder_action.triggered.connect(self._open_sync_folder)
         menu.addAction(open_folder_action)
 
         settings_action = QAction("Settings...", self)
         settings_action.triggered.connect(self.sync_app.show_settings)
         menu.addAction(settings_action)
+
+        menu.addSeparator()
+
+        reset_action = QAction("Reset All Data", self)
+        reset_action.triggered.connect(self._reset_from_tray)
+        menu.addAction(reset_action)
 
         menu.addSeparator()
 
@@ -253,6 +435,49 @@ class SystemTrayIcon(QSystemTrayIcon):
             self.setToolTip("gdrive-linux — Not logged in")
             self.email_action.setText("Not logged in")
 
+    def _update_cache_action(self):
+        try:
+            from disk_cache import get_cache_size
+
+            size_bytes = get_cache_size()
+            if size_bytes < 1024:
+                text = f"Cache: {size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                text = f"Cache: {size_bytes / 1024:.1f} KB"
+            else:
+                text = f"Cache: {size_bytes / (1024 * 1024):.1f} MB"
+        except Exception:
+            text = "Cache: unknown"
+        self.cache_action.setText(text)
+
+    def _clear_cache_from_tray(self):
+        reply = QMessageBox.question(
+            None,
+            "Clear Cache",
+            "Are you sure you want to clear the disk cache?\n"
+            "Cached file chunks will need to be re-downloaded from Google Drive.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                from disk_cache import clear_cache
+
+                freed = clear_cache()
+                self._update_cache_action()
+                freed_mb = freed / (1024 * 1024)
+                self._show_tray_message(f"Cache cleared: {freed_mb:.1f} MB freed.")
+                logging.info("Cache cleared from tray (%d bytes freed).", freed)
+            except Exception as e:
+                logging.error("Failed to clear cache from tray: %s", e)
+                self._show_tray_message(f"Failed to clear cache: {e}")
+
+    def _reset_from_tray(self):
+        """Open settings and trigger the reset from there (reuses same logic)."""
+        self.sync_app.show_settings()
+        if self.sync_app.settings_window:
+            self.sync_app.settings_window._reset_application()
+
+    @pyqtSlot(str)
     def _show_tray_message(self, message):
         self.showMessage(
             "gdrive-linux",
@@ -271,12 +496,12 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _open_sync_folder(self):
         try:
             if sys.platform == "win32":
-                os.startfile(FUSE_MOUNT_POINT)
+                os.startfile(config.FUSE_MOUNT_POINT)
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", FUSE_MOUNT_POINT])
+                subprocess.Popen(["open", config.FUSE_MOUNT_POINT])
             else:
-                subprocess.Popen(["xdg-open", FUSE_MOUNT_POINT])
-            logging.info("Opened mount point: %s", FUSE_MOUNT_POINT)
+                subprocess.Popen(["xdg-open", config.FUSE_MOUNT_POINT])
+            logging.info("Opened mount point: %s", config.FUSE_MOUNT_POINT)
         except Exception as e:
             logging.error("Could not open mount point: %s", e)
             self._show_tray_message(f"Error opening folder: {e}")
