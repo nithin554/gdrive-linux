@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/nithin/gdrive-linux/security/policy
+    about: Please report security vulnerabilities privately via email — see SECURITY.md
+  - name: Questions & Discussions
+    about: For questions and general discussion, please open a regular issue with the "question" label
