@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gdrive-linux — Native Google Drive network drive for Linux</title>
+    <meta name="description" content="Mount your Google Drive as a FUSE virtual filesystem on Linux. Pure streaming — zero local storage." />
+    <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/nithin554/gdrive-linux/main/icons/gdrive-linux.svg" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="gdrive-linux" />
+    <meta property="og:description" content="Native Google Drive network drive for Linux. FUSE virtual filesystem, pure streaming, zero disk usage." />
+    <meta property="og:url" content="https://nithin554.github.io/gdrive-linux/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://raw.githubusercontent.com/nithin554/gdrive-linux/main/icons/gdrive-linux.png" />
+
+    <!-- Google Verification (replace with your own if needed) -->
+    <meta name="google-site-verification" content="YOUR_VERIFICATION_CODE" />
+
+    <style>
+        /* ---------- Reset & Base ---------- */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0d1117;
+            color: #e6edf3;
+            line-height: 1.6;
+        }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        img { max-width: 100%; height: auto; }
+        pre, code { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
+
+        /* ---------- Container ---------- */
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        /* ---------- Header / Hero ---------- */
+        .hero {
+            padding: 5rem 0 3rem;
+            text-align: center;
+            border-bottom: 1px solid #21262d;
+        }
+        .hero-icon {
+            width: 96px;
+            height: 96px;
+            margin-bottom: 1.5rem;
+            filter: drop-shadow(0 4px 12px rgba(88,166,255,0.25));
+        }
+        .hero h1 {
+            font-size: 2.75rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #e6edf3 0%, #58a6ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .hero .tagline {
+            font-size: 1.2rem;
+            color: #8b949e;
+            margin: 0.75rem 0 2rem;
+        }
+        .hero .badges {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 2rem;
+        }
+        .hero .badges img { height: 22px; border-radius: 4px; }
+
+        .btn-row {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #e6edf3;
+        }
+        .btn-primary {
+            background: #238636;
+            border-color: #2ea043;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #2ea043;
+            text-decoration: none;
+        }
+        .btn-outline:hover {
+            background: #30363d;
+            text-decoration: none;
+        }
+
+        /* ---------- Section ---------- */
+        section { padding: 4rem 0; border-bottom: 1px solid #21262d; }
+        section:last-of-type { border-bottom: none; }
+        section h2 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        section .subtitle {
+            color: #8b949e;
+            margin-bottom: 2rem;
+        }
+
+        /* ---------- Features Grid ---------- */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 1.5rem;
+        }
+        .feature-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 1.5rem;
+            transition: border-color 0.2s;
+        }
+        .feature-card:hover { border-color: #58a6ff; }
+        .feature-card .icon { font-size: 1.5rem; margin-bottom: 0.5rem; display: block; }
+        .feature-card h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+        .feature-card p { color: #8b949e; font-size: 0.9rem; }
+
+        /* ---------- Architecture Diagram ---------- */
+        .diagram {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 2rem;
+            overflow-x: auto;
+        }
+        .diagram pre {
+            color: #c9d1d9;
+            font-size: 0.85rem;
+            line-height: 1.7;
+        }
+        .diagram .arrow { color: #58a6ff; }
+        .diagram .label { color: #8b949e; }
+        .diagram .highlight { color: #3fb950; }
+
+        /* ---------- Installation ---------- */
+        .install-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        .install-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 1.25rem;
+            text-align: center;
+        }
+        .install-card .distro { font-weight: 600; font-size: 1rem; }
+        .install-card .cmd {
+            display: block;
+            background: #0d1117;
+            color: #58a6ff;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.8rem;
+            padding: 0.5rem;
+            border-radius: 6px;
+            margin-top: 0.75rem;
+            border: 1px solid #30363d;
+            overflow-x: auto;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .install-card .cmd:hover { border-color: #58a6ff; }
+
+        /* ---------- OAuth / Verification ---------- */
+        .oauth-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 2rem;
+            margin-top: 1.5rem;
+        }
+        .oauth-box h3 { margin-bottom: 1rem; }
+        .oauth-box ol {
+            padding-left: 1.25rem;
+            color: #c9d1d9;
+        }
+        .oauth-box ol li { margin-bottom: 0.75rem; }
+        .oauth-box .screenshot-placeholder {
+            background: #0d1117;
+            border: 2px dashed #30363d;
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            color: #484f58;
+            margin: 1.5rem 0;
+        }
+
+        /* ---------- Usage Steps ---------- */
+        .usage-steps { counter-reset: step; }
+        .usage-step {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 1.25rem 1.5rem;
+        }
+        .usage-step .num {
+            flex-shrink: 0;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #238636;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.9rem;
+        }
+        .usage-step .body h3 { font-size: 1rem; margin-bottom: 0.25rem; }
+        .usage-step .body p { color: #8b949e; font-size: 0.9rem; }
+
+        /* ---------- Footer ---------- */
+        footer {
+            text-align: center;
+            padding: 2.5rem 0;
+            color: #484f58;
+            font-size: 0.85rem;
+        }
+        footer a { color: #8b949e; }
+
+        /* ---------- Responsive ---------- */
+        @media (max-width: 600px) {
+            .hero h1 { font-size: 2rem; }
+            .hero { padding: 3rem 0 2rem; }
+            section { padding: 3rem 0; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ════════════════════════ HERO ════════════════════════ -->
+<header class="hero">
+    <div class="container">
+        <img class="hero-icon" src="https://raw.githubusercontent.com/nithin554/gdrive-linux/main/icons/gdrive-linux.svg"
+             alt="gdrive-linux icon" />
+        <h1>gdrive-linux</h1>
+        <p class="tagline">Native Google Drive network drive for Linux &mdash; mount your cloud, zero disk used.</p>
+        <div class="badges">
+            <img src="https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml/badge.svg" alt="PR Checks" />
+            <img src="https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml/badge.svg" alt="Build & Release" />
+            <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+            <img src="https://img.shields.io/github/v/release/nithin554/gdrive-linux?color=238636&label=latest" alt="Latest release" />
+        </div>
+        <div class="btn-row">
+            <a class="btn btn-primary" href="https://github.com/nithin554/gdrive-linux/releases/latest" target="_blank">
+                &#x2B07; Download
+            </a>
+            <a class="btn btn-outline" href="#installation">Installation</a>
+            <a class="btn btn-outline" href="#oauth-verification">OAuth Verification</a>
+            <a class="btn btn-outline" href="https://github.com/nithin554/gdrive-linux" target="_blank">
+                &#x1f4c1; GitHub
+            </a>
+        </div>
+    </div>
+</header>
+
+<!-- ════════════════════════ FEATURES ════════════════════════ -->
+<section id="features">
+    <div class="container">
+        <h2>Features</h2>
+        <p class="subtitle">Everything you need from a cloud drive, without the bloat.</p>
+        <div class="features-grid">
+            <div class="feature-card">
+                <span class="icon">&#x1f4e1;</span>
+                <h3>True Network Drive</h3>
+                <p>FUSE virtual filesystem mounted at <code>~/Google Drive (email)</code>, accessible to every application on your system.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x26a1;</span>
+                <h3>Pure Streaming</h3>
+                <p>Reads stream from Drive API directly into memory. Writes buffer in RAM and upload on close. <strong>Nothing touches disk.</strong></p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f4c1;</span>
+                <h3>Instant Listing</h3>
+                <p><code>ls</code>, file managers and <code>stat</code> use metadata only &mdash; zero network calls. Files appear instantly.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f310;</span>
+                <h3>Infinite Storage</h3>
+                <p>Your entire Google Drive is accessible with zero local footprint. No cache files, no placeholders, no downloads.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f578;&#xfe0f;</span>
+                <h3>System Tray</h3>
+                <p>Right-click tray icon for account info, settings, manual sync, log out, and quit. Left-click opens your drive.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f510;</span>
+                <h3>OAuth 2.0</h3>
+                <p>Secure Google authentication via browser-based OAuth flow. Tokens stored in <code>~/.config/gdrive-linux/</code>.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f504;</span>
+                <h3>Account Switching</h3>
+                <p>Log out and log in with a different Google account without restarting the application.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f6ab;</span>
+                <h3>Delete Protection</h3>
+                <p>Accidental deletions are blocked with a warning notification to prevent permanent data loss.</p>
+            </div>
+            <div class="feature-card">
+                <span class="icon">&#x1f4e6;</span>
+                <h3>Cross-Distro Packages</h3>
+                <p>Available as <code>.deb</code>, <code>.rpm</code>, <code>.pkg.tar.zst</code> and universal AppImage.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════ HOW IT WORKS ════════════════════════ -->
+<section id="how-it-works">
+    <div class="container">
+        <h2>How It Works</h2>
+        <p class="subtitle">A FUSE virtual filesystem that streams everything on demand.</p>
+        <div class="diagram">
+<pre>
+   <span class="highlight">User / app reads file content</span>
+            <span class="arrow">&#x2502;</span>
+            <span class="arrow">&#x25BC;</span>
+     FUSE intercepts <span class="highlight">read()</span>   &larr; <span class="label">open()/stat() are free (zero network)</span>
+            <span class="arrow">&#x2502;</span>
+            <span class="arrow">&#x25BC;</span>
+     FUSE streams from Drive API   &larr; <span class="label">content goes into memory (never disk)</span>
+            <span class="arrow">&#x2502;</span>
+            <span class="arrow">&#x25BC;</span>
+   <span class="highlight">User edits file</span>
+            <span class="arrow">&#x2502;</span>
+            <span class="arrow">&#x25BC;</span>
+     FUSE uploads to Drive on close  &larr; <span class="label">dirty buffer sent to Drive API</span>
+</pre>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════ INSTALLATION ════════════════════════ -->
+<section id="installation">
+    <div class="container">
+        <h2>Installation</h2>
+        <p class="subtitle">Download the package for your distribution from the <a href="https://github.com/nithin554/gdrive-linux/releases/latest" target="_blank">latest release</a>.</p>
+        <div class="install-grid">
+            <div class="install-card">
+                <div class="distro">&#x1f4c0; Debian / Ubuntu / Mint</div>
+                <code class="cmd" onclick="navigator.clipboard.writeText(this.textContent)">sudo dpkg -i gdrive-linux-*.deb</code>
+            </div>
+            <div class="install-card">
+                <div class="distro">&#x1f4c0; Fedora / RHEL</div>
+                <code class="cmd" onclick="navigator.clipboard.writeText(this.textContent)">sudo rpm -i gdrive-linux-*.rpm</code>
+            </div>
+            <div class="install-card">
+                <div class="distro">&#x1f4c0; Arch / Manjaro</div>
+                <code class="cmd" onclick="navigator.clipboard.writeText(this.textContent)">sudo pacman -U gdrive-linux-*.pkg.tar.zst</code>
+            </div>
+            <div class="install-card">
+                <div class="distro">&#x1f4c0; All Distros (AppImage)</div>
+                <code class="cmd" onclick="navigator.clipboard.writeText(this.textContent)">chmod +x *.AppImage &amp;&amp; ./gdrive-linux-*.AppImage</code>
+            </div>
+        </div>
+        <p style="margin-top:1.5rem;color:#8b949e;font-size:0.9rem;">
+            <strong>Dependency:</strong> Requires FUSE (libfuse2).
+            See <a href="https://github.com/nithin554/gdrive-linux#installation" target="_blank">README</a> for distro-specific install commands.
+        </p>
+    </div>
+</section>
+
+<!-- ════════════════════════ OAUTH VERIFICATION ════════════════════════ -->
+<section id="oauth-verification">
+    <div class="container">
+        <h2>OAuth Verification &amp; Privacy</h2>
+        <p class="subtitle">What data gdrive-linux accesses, why, and how it's handled.</p>
+
+        <div class="oauth-box">
+            <h3>&#x1f50d; Scopes Requested</h3>
+            <p style="color:#c9d1d9;margin-bottom:1rem;">
+                gdrive-linux requests the following OAuth scopes from your Google account:
+            </p>
+            <ol>
+                <li><strong><code>https://www.googleapis.com/auth/drive.readonly</code></strong> &mdash; Read access to file metadata (names, sizes, types, modification times) and content. Used to list and open your files.</li>
+                <li><strong><code>https://www.googleapis.com/auth/drive.file</code></strong> &mdash; Per-file read/write access to files created or opened by the app. Used to save changes you make.</li>
+                <li><strong><code>https://www.googleapis.com/auth/userinfo.email</code></strong> &mdash; Read-only access to your email address. Used to label the mount point (e.g., <code>~/Google Drive (user@gmail.com)</code>) and display your account in the tray menu.</li>
+            </ol>
+        </div>
+
+        <div class="oauth-box">
+            <h3>&#x1f6e1;&#xfe0f; Privacy &amp; Data Handling</h3>
+            <ol>
+                <li><strong>No data stored on disk.</strong> File content is streamed directly from Google Drive into memory and never written to your local storage.</li>
+                <li><strong>Nothing leaves your machine</strong> except what you explicitly write back to Google Drive. No telemetry, no analytics, no external servers.</li>
+                <li><strong>Token security.</strong> Your OAuth token is stored in <code>~/.config/gdrive-linux/token.json</code> (permissions <code>600</code>). It is never shared or transmitted anywhere except to Google's token endpoint.</li>
+                <li><strong>No third-party services.</strong> gdrive-linux communicates exclusively with <code>googleapis.com</code>. No other servers are contacted.</li>
+                <li><strong>Open source.</strong> The entire codebase is MIT-licensed and fully auditable on <a href="https://github.com/nithin554/gdrive-linux" target="_blank">GitHub</a>.</li>
+            </ol>
+        </div>
+
+        <div class="oauth-box">
+            <h3>&#x1f4b3; Verification Details for Google OAuth</h3>
+            <p style="color:#c9d1d9;margin-bottom:1rem;">
+                This section documents how gdrive-linux uses OAuth, which is required for Google's
+                OAuth verification process (sensitive / restricted scopes review).
+            </p>
+            <ol>
+                <li>
+                    <strong>Application Type:</strong> Desktop application (Python + PyQt6).
+                    OAuth flow uses the loopback redirect URI (<code>http://localhost</code>).
+                </li>
+                <li>
+                    <strong>Authentication Flow:</strong>
+                    PKCE (Proof Key for Code Exchange) OAuth 2.0 flow. No client secret
+                    is sent over the wire. The user authorizes via their browser.
+                </li>
+                <li>
+                    <strong>Token Storage:</strong>
+                    Credentials are saved to <code>~/.config/gdrive-linux/token.json</code>
+                    after first authentication. They are refreshed automatically using the
+                    refresh token when expired.
+                </li>
+                <li>
+                    <strong>Data Access Justification:</strong>
+                    <ul style="margin-top:0.5rem;padding-left:1.25rem;color:#8b949e;">
+                        <li><code>drive.readonly</code> + <code>drive.file</code> &mdash; Required to present your Google Drive as a mounted filesystem and allow read/write operations.</li>
+                        <li><code>userinfo.email</code> &mdash; Required to identify the account being used (displayed in the mount point path and tray menu).</li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>No data shared with third parties.</strong>
+                    All API calls are made directly from the user's machine to
+                    <code>www.googleapis.com</code>.
+                </li>
+                <li>
+                    <strong>Data deletion:</strong>
+                    Users can revoke access at any time from their
+                    <a href="https://myaccount.google.com/permissions" target="_blank">Google Account Permissions</a>
+                    page. The "Reset All Data" option in the app tray menu also deletes the local token.
+                </li>
+            </ol>
+        </div>
+
+        <div class="oauth-box" style="border-color:#58a6ff;">
+            <h3>&#x1f4f7; Screenshots (OAuth Consent Screen)</h3>
+            <p style="color:#c9d1d9;margin-bottom:1rem;">
+                Below are the screens the user sees during the OAuth flow, for verification purposes.
+            </p>
+            <div class="screenshot-placeholder">
+                &#x1f4f7; Consent screen — <em>Add a screenshot of your Google OAuth consent screen here</em>
+            </div>
+            <div class="screenshot-placeholder">
+                &#x1f4f7; App in use — <em>Add a screenshot of gdrive-linux mounted and running</em>
+            </div>
+            <p style="color:#8b949e;font-size:0.85rem;margin-top:1rem;">
+                Replace these placeholders with actual screenshots. Store images in the
+                <code>docs/screenshots/</code> directory and reference them directly.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════ USAGE ════════════════════════ -->
+<section id="usage">
+    <div class="container">
+        <h2>Usage</h2>
+        <p class="subtitle">From launch to your files — it just works.</p>
+        <div class="usage-steps">
+            <div class="usage-step">
+                <span class="num">1</span>
+                <div class="body">
+                    <h3>Launch the application</h3>
+                    <p>Run <code>gdrive-linux</code> from your terminal or application menu. It authenticates with Google Drive and mounts the network drive automatically.</p>
+                </div>
+            </div>
+            <div class="usage-step">
+                <span class="num">2</span>
+                <div class="body">
+                    <h3>Files appear instantly</h3>
+                    <p>Your entire Google Drive is mounted at <code>~/Google Drive (&lt;email&gt;)</code>. Files show up with real sizes — zero bytes stored locally.</p>
+                </div>
+            </div>
+            <div class="usage-step">
+                <span class="num">3</span>
+                <div class="body">
+                    <h3>Open, edit, save</h3>
+                    <p>Open a file — content streams from Drive into memory on demand. Edit and save — changes upload to Drive when you close the file.</p>
+                </div>
+            </div>
+            <div class="usage-step">
+                <span class="num">4</span>
+                <div class="body">
+                    <h3>Use the tray icon</h3>
+                    <p><strong>Left-click</strong> opens the drive in your file manager. <strong>Right-click</strong> shows account info, settings, manual sync, log out, and quit.</p>
+                </div>
+            </div>
+            <div class="usage-step">
+                <span class="num">5</span>
+                <div class="body">
+                    <h3>Switch accounts or reset</h3>
+                    <p>Go to Settings &rarr; Log out to switch Google accounts. Use "Reset All Data" to clear token, cache, and mapping — all at once.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════ CONFIGURATION ════════════════════════ -->
+<section id="configuration">
+    <div class="container">
+        <h2>Configuration</h2>
+        <p class="subtitle">Environment variables and auto-generated config files.</p>
+        <div class="oauth-box">
+            <h3>&#x2699;&#xfe0f; Environment Variables</h3>
+            <table style="width:100%;border-collapse:collapse;color:#c9d1d9;font-size:0.9rem;">
+                <thead>
+                    <tr style="border-bottom:1px solid #30363d;">
+                        <th style="padding:0.5rem;text-align:left;">Variable</th>
+                        <th style="padding:0.5rem;text-align:left;">Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="border-bottom:1px solid #21262d;">
+                        <td style="padding:0.5rem;font-family:monospace;">GDRIVE_CLIENT_ID</td>
+                        <td style="padding:0.5rem;">Google OAuth client ID</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:0.5rem;font-family:monospace;">GDRIVE_CLIENT_SECRET</td>
+                        <td style="padding:0.5rem;">Google OAuth client secret</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin-top:1.5rem;">&#x1f4c4; Config Files (in <code>~/.config/gdrive-linux/</code>)</h3>
+            <table style="width:100%;border-collapse:collapse;color:#c9d1d9;font-size:0.9rem;">
+                <thead>
+                    <tr style="border-bottom:1px solid #30363d;">
+                        <th style="padding:0.5rem;text-align:left;">File</th>
+                        <th style="padding:0.5rem;text-align:left;">Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="border-bottom:1px solid #21262d;">
+                        <td style="padding:0.5rem;font-family:monospace;">token.json</td>
+                        <td style="padding:0.5rem;">Google OAuth token (auto-generated)</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #21262d;">
+                        <td style="padding:0.5rem;font-family:monospace;">sync_mapping.json</td>
+                        <td style="padding:0.5rem;">Local path &harr; Drive file ID mapping</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:0.5rem;font-family:monospace;">settings.json</td>
+                        <td style="padding:0.5rem;">Application preferences (autostart, etc.)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════ FOOTER ════════════════════════ -->
+<footer>
+    <div class="container">
+        <p>
+            <a href="https://github.com/nithin554/gdrive-linux">gdrive-linux</a> &mdash;
+            MIT Licensed &bull;
+            Built with &#x2764;&#xfe0f; for Linux
+        </p>
+    </div>
+</footer>
+
+</body>
+</html>
