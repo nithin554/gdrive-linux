@@ -96,7 +96,9 @@ jobs:
         shell: bash
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git python python-pip python-virtualenv nodejs wget sudo binutils fuse2
+          pacman -S --noconfirm base-devel git python python-pip python-virtualenv nodejs wget sudo binutils
+          # FUSE: try fuse2 (Arch extra repo), fall back to fuse
+          pacman -S --noconfirm fuse2 2>/dev/null || pacman -S --noconfirm fuse 2>/dev/null || echo "WARNING: FUSE package not found"
           python -m venv /opt/venv
           PIP_CACHE_DIR=/tmp/pip-cache /opt/venv/bin/pip install -r requirements.txt
           echo "/opt/venv/bin" >> $GITHUB_PATH
@@ -118,6 +120,7 @@ jobs:
           sudo -u builder PATH="/opt/venv/bin:$PATH" /opt/venv/bin/pyinstaller --onefile --windowed --name gdrive-linux \
             --hidden-import googleapiclient \
             --hidden-import watchdog \
+            --hidden-import fuse \
             --hidden-import PyQt6 \
             main.py
 
@@ -133,6 +136,7 @@ jobs:
           PATH="/opt/venv/bin:$PATH" pyinstaller --onefile --windowed --name gdrive-linux \
             --hidden-import googleapiclient \
             --hidden-import watchdog \
+            --hidden-import fuse \
             --hidden-import PyQt6 \
             main.py
 
@@ -147,6 +151,7 @@ jobs:
           pyinstaller --onefile --windowed --name gdrive-linux \
             --hidden-import googleapiclient \
             --hidden-import watchdog \
+            --hidden-import fuse \
             --hidden-import PyQt6 \
             main.py
 

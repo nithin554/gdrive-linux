@@ -1,6 +1,5 @@
 import os
 import logging
-import json
 
 # --- OAuth 2.0 Client Configuration ---
 # Both CLIENT_ID and CLIENT_SECRET are injected from GitHub repository secrets
@@ -21,6 +20,22 @@ TOKEN_FILE = os.path.join(_APP_CONFIG_DIR, "token.json")
 MAPPING_FILE = os.path.join(_APP_CONFIG_DIR, "sync_mapping.json")
 SETTINGS_FILE = os.path.join(_APP_CONFIG_DIR, "settings.json")
 
+# --- Cache directory ---
+_CACHE_HOME = os.environ.get(
+    "XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")
+)
+FUSE_CACHE_DIR = os.path.join(_CACHE_HOME, "gdrive-linux", "fuse")
+
+# --- Local disk cache settings ---
+# Google Drive file chunks are cached on disk for performance. The cache uses
+# an LRU eviction policy and a background cleanup thread periodically removes
+# stale entries.
+CACHE_DIR = os.path.join(_CACHE_HOME, "gdrive-linux", "cache")
+CACHE_MAX_SIZE_MB = 1024  # Maximum disk cache size in MB (default 1 GB)
+CACHE_MAX_AGE_SECONDS = 86400  # Evict files untouched for 24 hours
+CACHE_CLEANUP_INTERVAL = 300  # Run LRU cleanup every 5 minutes
+CACHE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB chunks stored as separate files
+
 # --- Scopes ---
 SCOPES = [
     "openid",
@@ -29,58 +44,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
 ]
 
-# --- Sync Folder ---
-_DEFAULT_SYNC_FOLDER = os.path.abspath(
-    os.environ.get("GDRIVE_SYNC_FOLDER", "my_gdrive_sync_folder")
-)
+# --- FUSE mount point (network drive) ---
+# Fixed path under the user's home directory. This is where the virtual
+# filesystem is mounted — no user selection, works like /media/gdrive.
+FUSE_MOUNT_POINT = os.path.join(os.path.expanduser("~"), "Gdrive")
 
-
-def _load_sync_folder() -> str:
-    """Load the sync folder path from settings file, env var, or default."""
-    # Environment variable takes highest priority
-    env_folder = os.environ.get("GDRIVE_SYNC_FOLDER")
-    if env_folder:
-        return os.path.abspath(env_folder)
-    # Then settings file
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r") as f:
-                data = json.load(f)
-                saved = data.get("sync_folder")
-                if saved:
-                    return os.path.abspath(saved)
-        except (json.JSONDecodeError, OSError):
-            pass
-    # Fall back to default
-    return os.path.abspath(_DEFAULT_SYNC_FOLDER)
-
-
-def save_sync_folder(path: str) -> bool:
-    """Persist the sync folder path to settings file."""
-    try:
-        settings = {}
-        if os.path.exists(SETTINGS_FILE):
-            with open(SETTINGS_FILE, "r") as f:
-                settings = json.load(f)
-        settings["sync_folder"] = os.path.abspath(path)
-        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-        with open(SETTINGS_FILE, "w") as f:
-            json.dump(settings, f, indent=2)
-        return True
-    except OSError as e:
-        logging.error("Failed to save sync folder setting: %s", e)
-        return False
-
-
-LOCAL_SYNC_FOLDER = _load_sync_folder()
+# --- LOCAL_SYNC_FOLDER is kept for backward compatibility in the mapping.
+# In pure streaming mode it's identical to FUSE_MOUNT_POINT.
+LOCAL_SYNC_FOLDER = FUSE_MOUNT_POINT
 
 # --- Sync Intervals ---
 REMOTE_SYNC_INTERVAL_SECONDS = 60
-ROLLBACK_PERIOD_SECONDS = 3600  # 1 hour
-ROLLBACK_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
 # --- Default Mode ---
-DEFAULT_FILE_MODE = "online"  # "local" or "online" — "online" creates placeholders, user downloads on demand
+DEFAULT_FILE_MODE = "online"
 
 # --- Ensure config dir exists ---
 os.makedirs(_APP_CONFIG_DIR, exist_ok=True)

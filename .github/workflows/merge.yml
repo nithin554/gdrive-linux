@@ -95,13 +95,12 @@ jobs:
             echo "notes=$NOTES" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create GitHub Release (draft)
+      - name: Create GitHub Release
         shell: bash
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
             --title "${{ steps.tag.outputs.tag }}" \
-            --notes "${{ steps.notes.outputs.notes }}" \
-            --draft
+            --notes "${{ steps.notes.outputs.notes }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -162,10 +161,15 @@ jobs:
       image: archlinux:latest
       options: --user root
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git python python-pip python-virtualenv nodejs wget sudo binutils fuse2
+          pacman -S --noconfirm base-devel git python python-pip python-virtualenv nodejs wget sudo binutils
+          # FUSE: try fuse2 (Arch extra repo), fall back to fuse
+          pacman -S --noconfirm fuse2 2>/dev/null || pacman -S --noconfirm fuse 2>/dev/null || echo "WARNING: FUSE package not found"
           python -m venv /opt/venv
           PIP_CACHE_DIR=/tmp/pip-cache /opt/venv/bin/pip install -r requirements.txt
           echo "/opt/venv/bin" >> $GITHUB_PATH
@@ -173,9 +177,6 @@ jobs:
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R builder:builder /opt/venv
-
-      - name: Checkout
-        uses: actions/checkout@v4
 
       - name: Build executable
         run: |
@@ -188,6 +189,7 @@ jobs:
           sudo -u builder PATH="/opt/venv/bin:$PATH" /opt/venv/bin/pyinstaller --onefile --windowed --name gdrive-linux \
             --hidden-import googleapiclient \
             --hidden-import watchdog \
+            --hidden-import fuse \
             --hidden-import PyQt6 \
             main.py
 
@@ -210,28 +212,23 @@ jobs:
     runs-on: ubuntu-latest
     needs: [create-release, build-ubuntu, build-arch]
     steps:
-      - name: Create combined artifacts directory
-        run: mkdir -p /tmp/release-assets
-
-      - name: Download Ubuntu-built artifacts
+      - name: Download Ubuntu artifacts
         uses: actions/download-artifact@v4
         with:
           name: gdrive-linux-${{ needs.create-release.outputs.version }}
-          path: /tmp/release-assets
+          path: /tmp/ubuntu-assets
 
-      - name: Download Arch-built artifacts
+      - name: Download Arch artifacts
         uses: actions/download-artifact@v4
         with:
           name: gdrive-linux-${{ needs.create-release.outputs.version }}-arch
-          path: /tmp/release-assets
+          path: /tmp/arch-assets
 
-      - name: List all assets
-        run: ls -lh /tmp/release-assets/
-
-      - name: Upload assets to release
+      - name: Upload Ubuntu artifacts to release
         shell: bash
         run: |
-          for asset in /tmp/release-assets/*; do
+          for asset in /tmp/ubuntu-assets/*; do
+            [ -f "${asset}" ] || continue
             echo "Uploading: $(basename "${asset}")"
             gh release upload "${{ needs.create-release.outputs.tag }}" \
               "${asset}" --clobber
@@ -239,11 +236,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Finalize release (remove draft status)
+      - name: Upload Arch artifacts to release
         shell: bash
         run: |
-          gh release edit "${{ needs.create-release.outputs.tag }}" \
-            --draft=false
+          for asset in /tmp/arch-assets/*; do
+            [ -f "${asset}" ] || continue
+            echo "Uploading: $(basename "${asset}")"
+            gh release upload "${{ needs.create-release.outputs.tag }}" \
+              "${asset}" --clobber
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
