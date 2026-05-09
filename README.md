@@ -7,6 +7,7 @@ zero local storage, files are streamed from Drive on read and uploaded on close.
 [![Pull Request Checks](https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml/badge.svg)](https://github.com/nithin554/gdrive-linux/actions/workflows/pull-request.yml)
 [![Build and Release](https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml/badge.svg)](https://github.com/nithin554/gdrive-linux/actions/workflows/merge.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub Pages](https://img.shields.io/badge/Website-gdrive--linux-blue?logo=github)](https://nithin554.github.io/gdrive-linux/)
 
 ## Features
 
