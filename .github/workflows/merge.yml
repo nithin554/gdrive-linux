@@ -226,13 +226,13 @@ jobs:
           fetch-depth: "0"
 
       - name: Download Ubuntu artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: gdrive-linux-${{ needs.create-release.outputs.version }}
           path: /tmp/ubuntu-assets
 
       - name: Download Arch artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: gdrive-linux-${{ needs.create-release.outputs.version }}-arch
           path: /tmp/arch-assets
