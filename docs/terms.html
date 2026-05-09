@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terms of Service — gdrive-linux</title>
+    <meta name="description" content="Terms of Service for gdrive-linux — a native Google Drive network drive for Linux." />
+    <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/nithin554/gdrive-linux/main/icons/gdrive-linux.svg" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Terms of Service — gdrive-linux" />
+    <meta property="og:description" content="Terms under which gdrive-linux is provided — an open-source, MIT-licensed Google Drive FUSE client for Linux." />
+    <meta property="og:url" content="https://nithin554.github.io/gdrive-linux/terms.html" />
+    <meta property="og:type" content="website" />
+
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0d1117;
+            color: #e6edf3;
+            line-height: 1.7;
+        }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code {
+            font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+            background: #161b22;
+            padding: 0.15em 0.4em;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        hr { border: none; border-top: 1px solid #21262d; margin: 2rem 0; }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        header {
+            padding: 3rem 0 1.5rem;
+            border-bottom: 1px solid #21262d;
+            margin-bottom: 2rem;
+        }
+        header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #e6edf3 0%, #58a6ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        header .meta {
+            color: #8b949e;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+        header .back-link {
+            display: inline-block;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+        header .back-link:hover { text-decoration: none; color: #8b949e; }
+
+        main { padding-bottom: 3rem; }
+
+        main h2 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            margin: 2rem 0 0.75rem;
+            color: #f0f6fc;
+        }
+        main h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin: 1.5rem 0 0.5rem;
+            color: #e6edf3;
+        }
+        main p, main li { color: #c9d1d9; margin-bottom: 0.75rem; }
+        main ul, main ol { padding-left: 1.5rem; margin-bottom: 1rem; }
+        main li { margin-bottom: 0.5rem; }
+
+        .highlight-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-left: 4px solid #58a6ff;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+        }
+        .highlight-box strong { color: #f0f6fc; }
+
+        .toc {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+        }
+        .toc h3 { margin-bottom: 0.75rem; font-size: 1rem; }
+        .toc ol {
+            padding-left: 1.25rem;
+            margin-bottom: 0;
+        }
+        .toc ol li {
+            margin-bottom: 0.4rem;
+            font-size: 0.9rem;
+        }
+        .toc ol li a { color: #c9d1d9; }
+        .toc ol li a:hover { color: #58a6ff; }
+
+        footer {
+            text-align: center;
+            padding: 2.5rem 0;
+            color: #484f58;
+            font-size: 0.85rem;
+            border-top: 1px solid #21262d;
+        }
+        footer a { color: #8b949e; }
+
+        @media (max-width: 600px) {
+            header h1 { font-size: 1.6rem; }
+            header { padding: 2rem 0 1rem; }
+        }
+
+        @media print {
+            body { background: #fff; color: #000; }
+            a { color: #000; }
+            .highlight-box { border-left-color: #000; background: #f5f5f5; }
+            header .back-link, .toc { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Terms of Service</h1>
+        <p class="meta">
+            <strong>gdrive-linux</strong> &mdash; Last updated: May 9, 2026
+        </p>
+        <a class="back-link" href="/gdrive-linux/">&larr; Back to gdrive-linux</a>
+    </header>
+
+    <main>
+        <p>
+            These Terms of Service ("Terms") govern your use of <strong>gdrive-linux</strong>
+            ("the application", "the Software"). By downloading, installing, or using the
+            Software, you agree to these Terms. If you do not agree, do not use the Software.
+        </p>
+
+        <p>
+            gdrive-linux is an open-source desktop application distributed under the
+            <a href="https://opensource.org/licenses/MIT" target="_blank">MIT License</a>.
+            It mounts your Google Drive as a FUSE virtual filesystem on Linux. The Software
+            is provided for free, with no warranty, and is not affiliated with Google LLC.
+        </p>
+
+        <div class="toc">
+            <h3>Table of Contents</h3>
+            <ol>
+                <li><a href="#license">License</a></li>
+                <li><a href="#acceptance">Acceptance of Terms</a></li>
+                <li><a href="#description">Description of Service</a></li>
+                <li><a href="#oauth">OAuth &amp; Google Account</a></li>
+                <li><a href="#acceptable-use">Acceptable Use</a></li>
+                <li><a href="#prohibited">Prohibited Activities</a></li>
+                <li><a href="#intellectual-property">Intellectual Property</a></li>
+                <li><a href="#disclaimer">Disclaimer of Warranties</a></li>
+                <li><a href="#limitation">Limitation of Liability</a></li>
+                <li><a href="#third-party">Third-Party Services</a></li>
+                <li><a href="#termination">Termination</a></li>
+                <li><a href="#changes">Changes to Terms</a></li>
+                <li><a href="#governing-law">Governing Law</a></li>
+                <li><a href="#contact">Contact</a></li>
+            </ol>
+        </div>
+
+        <h2 id="license">1. License</h2>
+        <p>
+            gdrive-linux is licensed under the
+            <a href="https://github.com/nithin554/gdrive-linux/blob/main/LICENSE" target="_blank">MIT License</a>.
+            A copy of the license is included in the source repository. In summary:
+        </p>
+        <div class="highlight-box">
+            <p style="margin-bottom: 0;">
+                Permission is hereby granted, free of charge, to any person obtaining a copy
+                of this software and associated documentation files (the "Software"), to deal
+                in the Software without restriction, including without limitation the rights
+                to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+                copies of the Software, and to permit persons to whom the Software is
+                furnished to do so, subject to the following conditions:<br /><br />
+                The above copyright notice and this permission notice shall be included in all
+                copies or substantial portions of the Software.<br /><br />
+                THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+            </p>
+        </div>
+
+        <h2 id="acceptance">2. Acceptance of Terms</h2>
+        <p>
+            By downloading, installing, or using gdrive-linux, you acknowledge that you have
+            read, understood, and agree to be bound by these Terms. If you are using the
+            Software on behalf of an organization, you represent that you have the authority
+            to bind that organization to these Terms.
+        </p>
+
+        <h2 id="description">3. Description of Service</h2>
+        <p>
+            gdrive-linux is a desktop application that:
+        </p>
+        <ul>
+            <li>Authenticates with your Google account via OAuth 2.0</li>
+            <li>Mounts your Google Drive as a FUSE virtual filesystem at <code>~/Google Drive (&lt;email&gt;)</code></li>
+            <li>Streams file content directly from Google Drive on read, uploading changes on close</li>
+            <li>Provides a system tray interface for account management, settings, and application control</li>
+        </ul>
+        <p>
+            The Software is provided "as is" and the developers make no guarantees about its
+            availability, reliability, or fitness for any particular purpose.
+        </p>
+
+        <h2 id="oauth">4. OAuth &amp; Google Account</h2>
+        <p>
+            gdrive-linux uses Google's OAuth 2.0 protocol to access your Google Drive. By
+            using the Software:
+        </p>
+        <ul>
+            <li>You grant the application access to the OAuth scopes listed in the <a href="privacy.html">Privacy Policy</a></li>
+            <li>You are responsible for maintaining the security of your Google account credentials</li>
+            <li>You may revoke access at any time via your <a href="https://myaccount.google.com/permissions" target="_blank">Google Account Permissions</a> page</li>
+            <li>The developers have no access to your Google account, credentials, or files</li>
+        </ul>
+        <p>
+            All communication occurs directly between your machine and Google's servers. The
+            developers cannot view, access, or retrieve any of your data.
+        </p>
+
+        <h2 id="acceptable-use">5. Acceptable Use</h2>
+        <p>You agree to use gdrive-linux in compliance with all applicable laws and regulations, including Google's <a href="https://developers.google.com/terms" target="_blank">Google APIs Terms of Service</a> and <a href="https://policies.google.com/terms" target="_blank">Google Terms of Service</a>.</p>
+        <p>You may use the Software for any lawful purpose, including personal, educational, and commercial use, subject to the terms of the MIT License.</p>
+
+        <h2 id="prohibited">6. Prohibited Activities</h2>
+        <p>You agree not to:</p>
+        <ul>
+            <li>Use the Software to violate any applicable law or regulation</li>
+            <li>Use the Software to infringe upon the intellectual property rights of others</li>
+            <li>Modify, reverse-engineer, or redistribute the Software in violation of the MIT License terms</li>
+            <li>Use the Software to distribute malware or harmful content</li>
+            <li>Attempt to circumvent any rate limits or API restrictions imposed by Google</li>
+            <li>Misrepresent the Software as being affiliated with or endorsed by Google LLC</li>
+        </ul>
+
+        <h2 id="intellectual-property">7. Intellectual Property</h2>
+        <p>
+            The gdrive-linux source code is copyrighted by the project contributors and
+            licensed under the MIT License. The name "gdrive-linux" and project logos are
+            provided for identification purposes. Google Drive is a trademark of Google LLC.
+            This project is not affiliated with, endorsed by, or sponsored by Google LLC.
+        </p>
+
+        <h2 id="disclaimer">8. Disclaimer of Warranties</h2>
+        <div class="highlight-box">
+            <p style="margin-bottom: 0;">
+                <strong>THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+                IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+                FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.</strong> The entire risk
+                as to the quality and performance of the Software is with you. Should the
+                Software prove defective, you assume the cost of all necessary servicing,
+                repair, or correction.
+            </p>
+        </div>
+        <p>
+            No advice or information, whether oral or written, obtained by you from the
+            developers or through the Software shall create any warranty not expressly stated
+            in these Terms.
+        </p>
+
+        <h2 id="limitation">9. Limitation of Liability</h2>
+        <div class="highlight-box">
+            <p style="margin-bottom: 0;">
+                <strong>IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+                CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+                OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+                OR OTHER DEALINGS IN THE SOFTWARE.</strong>
+            </p>
+        </div>
+        <p>
+            This includes, without limitation, damages for loss of data, loss of profits,
+            or service interruption arising from the use or inability to use the Software,
+            even if advised of the possibility of such damages.
+        </p>
+
+        <h2 id="third-party">10. Third-Party Services</h2>
+        <p>
+            gdrive-linux interfaces with Google's APIs (Google Drive API, OAuth 2.0 API).
+            Your use of these services is subject to Google's own terms and policies:
+        </p>
+        <ul>
+            <li><a href="https://policies.google.com/terms" target="_blank">Google Terms of Service</a></li>
+            <li><a href="https://developers.google.com/terms" target="_blank">Google APIs Terms of Service</a></li>
+            <li><a href="https://policies.google.com/privacy" target="_blank">Google Privacy Policy</a></li>
+        </ul>
+        <p>
+            The developers of gdrive-linux are not responsible for the availability, reliability,
+            or any changes to these third-party services.
+        </p>
+
+        <h2 id="termination">11. Termination</h2>
+        <p>
+            These Terms are effective until terminated. You may terminate the Terms at any
+            time by uninstalling the Software and revoking OAuth access to your Google account.
+            The developers reserve the right to terminate or suspend access to the Software
+            (e.g., by discontinuing distribution) without prior notice, for any reason.
+        </p>
+        <p>
+            Provisions that by their nature should survive termination — including license
+            grants, disclaimers, and limitations of liability — shall survive.
+        </p>
+
+        <h2 id="changes">12. Changes to Terms</h2>
+        <p>
+            These Terms may be updated from time to time. The "Last updated" date at the top
+            of this page will reflect the most recent revision. Continued use of the Software
+            after any changes constitutes acceptance of the new Terms. Significant changes
+            will be communicated via the project's
+            <a href="https://github.com/nithin554/gdrive-linux/releases" target="_blank">release notes</a>.
+        </p>
+
+        <h2 id="governing-law">13. Governing Law</h2>
+        <p>
+            These Terms shall be governed by and construed in accordance with the laws of
+            the State of California, without regard to its conflict of law provisions. Any
+            disputes arising from these Terms shall be resolved in the courts of Santa Clara
+            County, California.
+        </p>
+
+        <h2 id="contact">14. Contact</h2>
+        <p>
+            If you have questions about these Terms, please open an issue on the
+            <a href="https://github.com/nithin554/gdrive-linux/issues" target="_blank">GitHub repository</a>.
+        </p>
+
+        <hr />
+
+        <p style="color: #8b949e; font-size: 0.9rem;">
+            <strong>Disclaimer:</strong> gdrive-linux is an open-source community project. It is
+            not affiliated with, endorsed by, or sponsored by Google LLC. Google Drive is a
+            trademark of Google LLC.
+        </p>
+    </main>
+
+    <footer>
+        <p>
+            <a href="https://github.com/nithin554/gdrive-linux">gdrive-linux</a> &mdash;
+            MIT Licensed &bull;
+            <a href="/gdrive-linux/">Home</a> &bull;
+            <a href="/gdrive-linux/privacy.html">Privacy Policy</a> &bull;
+            <a href="/gdrive-linux/terms.html">Terms of Service</a>
+        </p>
+    </footer>
+</div>
+
+</body>
+</html>

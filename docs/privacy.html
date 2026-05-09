@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy Policy — gdrive-linux</title>
+    <meta name="description" content="Privacy policy for gdrive-linux — a native Google Drive network drive for Linux." />
+    <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/nithin554/gdrive-linux/main/icons/gdrive-linux.svg" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Privacy Policy — gdrive-linux" />
+    <meta property="og:description" content="How gdrive-linux handles your data: no telemetry, no tracking, zero local storage of file content." />
+    <meta property="og:url" content="https://nithin554.github.io/gdrive-linux/privacy.html" />
+    <meta property="og:type" content="website" />
+
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0d1117;
+            color: #e6edf3;
+            line-height: 1.7;
+        }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code {
+            font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+            background: #161b22;
+            padding: 0.15em 0.4em;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        hr { border: none; border-top: 1px solid #21262d; margin: 2rem 0; }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 0 1.5rem;
+        }
+
+        header {
+            padding: 3rem 0 1.5rem;
+            border-bottom: 1px solid #21262d;
+            margin-bottom: 2rem;
+        }
+        header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #e6edf3 0%, #58a6ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        header .meta {
+            color: #8b949e;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+        header .back-link {
+            display: inline-block;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+        header .back-link:hover { text-decoration: none; color: #8b949e; }
+
+        main { padding-bottom: 3rem; }
+
+        main h2 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            margin: 2rem 0 0.75rem;
+            color: #f0f6fc;
+        }
+        main h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin: 1.5rem 0 0.5rem;
+            color: #e6edf3;
+        }
+        main p, main li { color: #c9d1d9; margin-bottom: 0.75rem; }
+        main ul, main ol { padding-left: 1.5rem; margin-bottom: 1rem; }
+        main li { margin-bottom: 0.5rem; }
+
+        .highlight-box {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-left: 4px solid #58a6ff;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+        }
+        .highlight-box strong { color: #f0f6fc; }
+
+        footer {
+            text-align: center;
+            padding: 2.5rem 0;
+            color: #484f58;
+            font-size: 0.85rem;
+            border-top: 1px solid #21262d;
+        }
+        footer a { color: #8b949e; }
+
+        @media (max-width: 600px) {
+            header h1 { font-size: 1.6rem; }
+            header { padding: 2rem 0 1rem; }
+        }
+
+        /* Print styling */
+        @media print {
+            body { background: #fff; color: #000; }
+            a { color: #000; }
+            .highlight-box { border-left-color: #000; background: #f5f5f5; }
+            header .back-link { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Privacy Policy</h1>
+        <p class="meta">
+            <strong>gdrive-linux</strong> &mdash; Last updated: May 9, 2026
+        </p>
+        <a class="back-link" href="/gdrive-linux/">&larr; Back to gdrive-linux</a>
+    </header>
+
+    <main>
+        <p>
+            This Privacy Policy explains how <strong>gdrive-linux</strong> ("the application",
+            "we", "our") handles your data. gdrive-linux is an open-source desktop application
+            that mounts your Google Drive as a FUSE virtual filesystem on Linux. It is
+            distributed under the MIT License and the full source code is publicly available
+            on <a href="https://github.com/nithin554/gdrive-linux" target="_blank">GitHub</a>.
+        </p>
+
+        <div class="highlight-box">
+            <strong>Short version:</strong> gdrive-linux collects no data, sends no telemetry,
+            displays no ads, and communicates exclusively with Google's servers. File content
+            is streamed directly from Google Drive into memory and is never stored on disk.
+        </div>
+
+        <h2>1. Information We Access</h2>
+
+        <h3>1.1 Google Account Data (via OAuth 2.0)</h3>
+        <p>
+            When you authenticate, gdrive-linux requests the following OAuth scopes:
+        </p>
+        <ul>
+            <li>
+                <strong><code>https://www.googleapis.com/auth/drive.readonly</code></strong>
+                &mdash; Read access to file metadata and content. Used exclusively to list your
+                files and stream their content when opened.
+            </li>
+            <li>
+                <strong><code>https://www.googleapis.com/auth/drive.file</code></strong>
+                &mdash; Per-file read/write access to files you create or open through the
+                application. Used to save changes you make to files.
+            </li>
+            <li>
+                <strong><code>https://www.googleapis.com/auth/userinfo.email</code></strong>
+                &mdash; Read-only access to your email address. Used solely to label the
+                mount point path (e.g., <code>~/Google Drive (user@gmail.com)</code>) and
+                display your account email in the system tray menu.
+            </li>
+        </ul>
+
+        <h3>1.2 Local Configuration Data</h3>
+        <p>
+            The following files are created locally in <code>~/.config/gdrive-linux/</code>:
+        </p>
+        <ul>
+            <li><strong>token.json</strong> &mdash; Your Google OAuth credentials (access token, refresh token). Stored with file permissions <code>600</code> (owner read/write only).</li>
+            <li><strong>sync_mapping.json</strong> &mdash; A local index of Drive file IDs mapped to paths, used for fast metadata lookups.</li>
+            <li><strong>settings.json</strong> &mdash; Application preferences such as autostart toggle.</li>
+        </ul>
+        <p>
+            A cache directory at <code>~/.cache/gdrive-linux/cache/</code> may store recently
+            accessed file chunks for performance, managed with automatic LRU eviction. This
+            cache is local-only and never transmitted anywhere.
+        </p>
+
+        <h2>2. How We Use Your Data</h2>
+        <ul>
+            <li><strong>File metadata and content</strong> are accessed <em>only</em> to present your Google Drive as a mounted filesystem and allow read/write operations. Metadata is cached locally for performance; file content is streamed into memory on demand and never written to disk.</li>
+            <li><strong>Your email address</strong> is used only for display purposes (mount point path and tray menu). It is not stored, logged, or transmitted anywhere except to Google's API during authentication.</li>
+            <li><strong>No other use.</strong> We do not access, process, or store your data for any other purpose.</li>
+        </ul>
+
+        <h2>3. Data Sharing &amp; Third Parties</h2>
+        <ul>
+            <li><strong>No data is shared with third parties.</strong> gdrive-linux communicates exclusively with Google's APIs at <code>www.googleapis.com</code> and <code>oauth2.googleapis.com</code>.</li>
+            <li><strong>No telemetry, analytics, or crash reporting.</strong> The application contains no tracking code, no analytics SDKs, and no telemetry of any kind.</li>
+            <li><strong>No ads.</strong> gdrive-linux does not display or serve advertisements.</li>
+            <li><strong>No external servers.</strong> Aside from Google's own API endpoints, gdrive-linux does not contact any other server or service.</li>
+        </ul>
+
+        <h2>4. Data Storage &amp; Security</h2>
+        <ul>
+            <li><strong>Token storage.</strong> Your OAuth token is stored in <code>~/.config/gdrive-linux/token.json</code> with restricted permissions. It is never shared or transmitted except to Google's token endpoint for authentication and token refresh.</li>
+            <li><strong>No cloud sync of config.</strong> Local configuration files are never synced, backed up, or transmitted.</li>
+            <li><strong>File content is ephemeral.</strong> When you read a file, its content is streamed into memory and discarded when no longer needed. Nothing is permanently stored on disk.</li>
+        </ul>
+
+        <h2>5. Data Deletion &amp; Revocation</h2>
+        <p>You have full control over your data:</p>
+        <ul>
+            <li><strong>Revoke Google access</strong> at any time from your <a href="https://myaccount.google.com/permissions" target="_blank">Google Account Permissions</a> page.</li>
+            <li><strong>Reset All Data</strong> via the application's tray menu &rarr; Settings &rarr; Reset All Data. This deletes your local token, cache, and sync mapping, logging you out.</li>
+            <li><strong>Manual deletion:</strong> Delete the <code>~/.config/gdrive-linux/</code> and <code>~/.cache/gdrive-linux/</code> directories to remove all locally stored data.</li>
+        </ul>
+
+        <h2>6. Children's Privacy</h2>
+        <p>
+            gdrive-linux is not directed at children under the age of 13. We do not knowingly
+            collect personal information from children.
+        </p>
+
+        <h2>7. Open Source &amp; Audibility</h2>
+        <p>
+            The entire source code of gdrive-linux is publicly available under the MIT License
+            at <a href="https://github.com/nithin554/gdrive-linux" target="_blank">github.com/nithin554/gdrive-linux</a>.
+            Anyone can inspect, build, and verify what the application does.
+        </p>
+
+        <h2>8. Changes to This Policy</h2>
+        <p>
+            If this Privacy Policy is updated, the "Last updated" date at the top of this page
+            will be revised. Significant changes will be communicated via the project's
+            <a href="https://github.com/nithin554/gdrive-linux/releases" target="_blank">release notes</a>.
+        </p>
+
+        <h2>9. Contact</h2>
+        <p>
+            If you have questions about this Privacy Policy or the application's data practices,
+            please open an issue on the
+            <a href="https://github.com/nithin554/gdrive-linux/issues" target="_blank">GitHub repository</a>.
+        </p>
+
+        <hr />
+
+        <p style="color: #8b949e; font-size: 0.9rem;">
+            <strong>Disclaimer:</strong> gdrive-linux is an open-source community project. It is
+            not affiliated with, endorsed by, or sponsored by Google LLC. Google Drive is a
+            trademark of Google LLC.
+        </p>
+    </main>
+
+    <footer>
+        <p>
+            <a href="https://github.com/nithin554/gdrive-linux">gdrive-linux</a> &mdash;
+            MIT Licensed &bull;
+            <a href="/gdrive-linux/">Home</a> &bull;
+            <a href="/gdrive-linux/privacy.html">Privacy Policy</a> &bull;
+            <a href="/gdrive-linux/terms.html">Terms of Service</a>
+        </p>
+    </footer>
+</div>
+
+</body>
+</html>
