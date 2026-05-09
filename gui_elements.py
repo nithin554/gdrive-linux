@@ -500,7 +500,34 @@ class SystemTrayIcon(QSystemTrayIcon):
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", config.FUSE_MOUNT_POINT])
             else:
-                subprocess.Popen(["xdg-open", config.FUSE_MOUNT_POINT])
+                mount = config.FUSE_MOUNT_POINT
+                # Try known file managers directly (handles spaces in paths better
+                # than xdg-open, which can fail on FUSE mount points).
+                # gio open is preferred as it uses the system's default handler
+                # without xdg-open's MIME-type query issues.
+                opened = False
+                for cmd in [
+                    ["gio", "open", mount],
+                    ["nautilus", "--no-desktop", mount],
+                    ["dolphin", "--new-window", mount],
+                    ["nemo", mount],
+                    ["caja", mount],
+                    ["thunar", mount],
+                    ["pcmanfm", mount],
+                    ["xdg-open", mount],
+                ]:
+                    try:
+                        subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        opened = True
+                        break
+                    except FileNotFoundError:
+                        continue
+                if not opened:
+                    raise RuntimeError("No file manager found")
             logging.info("Opened mount point: %s", config.FUSE_MOUNT_POINT)
         except Exception as e:
             logging.error("Could not open mount point: %s", e)
