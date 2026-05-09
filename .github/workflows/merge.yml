@@ -155,7 +155,7 @@ jobs:
           gdrive-client-secret: ${{ secrets.GDRIVE_CLIENT_SECRET }}
 
       - name: Upload Ubuntu-built packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gdrive-linux-${{ needs.create-release.outputs.version }}
           path: ${{ steps.build.outputs.artifact-dir }}/
@@ -209,7 +209,7 @@ jobs:
           sudo -u builder bash .github/scripts/package-arch.sh "${VERSION}" "dist/gdrive-linux" "/tmp/packages"
 
       - name: Upload Arch package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gdrive-linux-${{ needs.create-release.outputs.version }}-arch
           path: /tmp/packages/*.pkg.tar.zst

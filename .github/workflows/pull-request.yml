@@ -201,7 +201,7 @@ jobs:
           done
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gdrive-linux-pr-${{ github.event.pull_request.number }}-${{ matrix.label }}
           path: ${{ steps.package.outputs.artifact-dir }}/
