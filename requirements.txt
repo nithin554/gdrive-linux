@@ -1,6 +1,6 @@
 google-api-python-client>=2.0.0
 google-auth-httplib2>=0.1.0
 google-auth-oauthlib>=1.0.0
-PyQt6>=6.5.0
+PyQt6>=6.11.0
 pyinstaller>=6.0.0
 fusepy>=3.0.0
