@@ -17,12 +17,6 @@ from config import (
 # config.LOCAL_SYNC_FOLDER is set dynamically after authentication.
 # All runtime code uses config.LOCAL_SYNC_FOLDER.
 
-# --- Conflict resolution strategy ---
-# When both local and remote have changed a file since the last sync,
-# the remote version wins by default. The local changes are backed up
-# as `.gdrive-conflict.<filename>.<timestamp>` in the same directory.
-CONFLICT_SUFFIX = ".gdrive-conflict"
-
 
 class SyncManager:
     def __init__(self, drive_service, service_pool=None):
@@ -726,22 +720,6 @@ class SyncManager:
         finally:
             self._sync_in_progress_files.discard(src_local_path)
             self._sync_in_progress_files.discard(dest_local_path)
-
-    def _has_local_changes_since(self, local_path: str, ref_time: float) -> bool:
-        """Check if a local file has been modified since the given reference time.
-
-        In pure streaming mode, files only exist on Drive, never locally on disk.
-        This always returns False — there are no local files to have changes.
-        """
-        return False
-
-    def _backup_local_file(self, local_path: str):
-        """Back up a local file before overwriting it due to a conflict.
-
-        In pure streaming mode, files only exist on Drive, never locally on disk.
-        This always returns None — there is nothing to back up.
-        """
-        return None
 
     def download_file(self, drive_file_id, local_file_path):
         """Downloads a file from Google Drive to the local cache.

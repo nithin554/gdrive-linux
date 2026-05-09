@@ -162,8 +162,8 @@ Environment variables:
 Edit `config.py` to customize defaults:
 - `REMOTE_SYNC_INTERVAL_SECONDS` — how often to check Drive for changes (default: 60s)
 - `CACHE_CHUNK_SIZE` — size of each disk cache chunk (default: 4 MB)
-- `CACHE_SIZE_LIMIT` — max disk cache size (default: 2 GB)
-- `READAHEAD_WINDOW_CHUNKS` — number of chunks to fetch on cache miss (default: 4, i.e. 16 MB)
+- `CACHE_MAX_SIZE_MB` — max disk cache size (default: 1024 MB)
+- `READAHEAD_WINDOW_CHUNKS` — number of chunks to fetch on cache miss (default: 8, i.e. 32 MB)
 - `MAX_CONCURRENT_FETCHES` — max concurrent Drive API read requests (default: 3)
 
 ## Project Structure
@@ -180,7 +180,6 @@ gdrive-linux/
 ├── autostart.py          # XDG autostart .desktop file management
 ├── disk_cache.py         # LRU disk cache for file chunks
 ├── drive_service_pool.py # Thread-local Drive service instances for parallel reads
-├── watchdog_handler.py   # Deprecated — kept for reference
 ├── requirements.txt      # Python dependencies
 ├── icons/                # Application icons
 ├── .github/              # CI/CD workflows and packaging scripts

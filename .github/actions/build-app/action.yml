@@ -81,7 +81,6 @@ runs:
         sed -i "s/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"\")/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"${GDRIVE_CLIENT_SECRET}\")/" config.py
         pyinstaller --onefile --windowed --name gdrive-linux \
           --hidden-import googleapiclient \
-          --hidden-import watchdog \
           --hidden-import fuse \
           --hidden-import PyQt6 \
           main.py

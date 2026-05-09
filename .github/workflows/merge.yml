@@ -196,7 +196,6 @@ jobs:
           sed -i "s/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"\")/os.environ.get(\"GDRIVE_CLIENT_SECRET\", \"${GDRIVE_CLIENT_SECRET}\")/" config.py
           sudo -u builder PATH="/opt/venv/bin:$PATH" /opt/venv/bin/pyinstaller --onefile --windowed --name gdrive-linux \
             --hidden-import googleapiclient \
-            --hidden-import watchdog \
             --hidden-import fuse \
             --hidden-import PyQt6 \
             main.py

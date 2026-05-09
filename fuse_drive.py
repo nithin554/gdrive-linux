@@ -112,7 +112,6 @@ def _stream_from_drive(
     offset: int = 0,
     size: int | None = None,
     populate_cache: bool = False,
-    drive_api_lock: threading.Lock | None = None,
     service_pool=None,
 ) -> io.BytesIO:
     """Download a byte range of file content from Google Drive.
@@ -130,9 +129,6 @@ def _stream_from_drive(
     is used for the HTTP request — allowing concurrent FUSE read threads
     to fetch different chunks in parallel without lock contention.
     Falls back to *drive_service* if no pool is given.
-
-    *drive_api_lock* should be the shared lock from SyncManager; if None,
-    falls back to the module-level ``_drive_api_lock`` for backward compat.
 
     Returns a BytesIO buffer positioned at 0 containing only the
     requested range.

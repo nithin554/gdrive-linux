@@ -288,12 +288,3 @@ def _evict_chunk(drive_id: str, chunk_index: int):
             os.rmdir(chunk_dir)
     except OSError:
         pass
-
-
-def cleanup_file(drive_id: str):
-    """Remove all cached chunks for a given file and clean up the directory.
-
-    Similar to ``invalidate_file`` but also purges from disk synchronously.
-    Called when a file is updated on Drive (remote sync detects a change).
-    """
-    invalidate_file(drive_id)
