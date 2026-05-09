@@ -501,11 +501,11 @@ class SystemTrayIcon(QSystemTrayIcon):
                 subprocess.Popen(["open", config.FUSE_MOUNT_POINT])
             else:
                 mount = config.FUSE_MOUNT_POINT
-                opened = False
                 errors = []
 
-                # Prefer the user's default file manager via GTK's gio,
-                # which handles FUSE mount points more reliably than xdg-open
+                # Try known file managers directly.
+                # xdg-open is the fallback but often fails on FUSE mount points
+                # due to MIME-type query issues.
                 for cmd in [
                     ["gio", "open", mount],
                     ["nautilus", "--no-desktop", mount],
@@ -517,37 +517,25 @@ class SystemTrayIcon(QSystemTrayIcon):
                     ["xdg-open", mount],
                 ]:
                     try:
-                        proc = subprocess.Popen(
+                        subprocess.Popen(
                             cmd,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )
-                        proc.wait(timeout=5)
-                        if proc.returncode == 0:
-                            opened = True
-                            break
-                        errors.append(f"{cmd[0]}: exit {proc.returncode}")
+                        logging.info("Opened mount point via: %s", cmd[0])
+                        return
                     except FileNotFoundError:
                         errors.append(f"{cmd[0]}: not found")
                         continue
-                    except subprocess.TimeoutExpired:
-                        errors.append(f"{cmd[0]}: timed out")
-                        continue
 
-                if not opened:
-                    logging.warning(
-                        "Could not open mount point: %s",
-                        "; ".join(errors),
-                    )
-                    self._show_tray_message(
-                        "Could not open the folder. "
-                        "Your system's file manager or GLib may have "
-                        "library version conflicts. "
-                        "Try opening the path manually:\n" + mount
-                    )
-                    return
-
-            logging.info("Opened mount point: %s", config.FUSE_MOUNT_POINT)
+                logging.warning(
+                    "Could not open mount point: %s",
+                    "; ".join(errors),
+                )
+                self._show_tray_message(
+                    "Could not open the folder. "
+                    "Try opening this path manually:\n" + mount
+                )
         except Exception as e:
             logging.error("Could not open mount point: %s", e)
             self._show_tray_message(f"Error opening folder: {e}")
