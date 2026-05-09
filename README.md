@@ -205,6 +205,14 @@ Each release produces separate artifacts per distribution:
 - **Ubuntu** → `.deb`, `.rpm`, `.AppImage`
 - **Arch Linux** → `.pkg.tar.zst`
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and pull request guidelines.
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating, you agree to uphold this code.
+
 ## License
 
 MIT
