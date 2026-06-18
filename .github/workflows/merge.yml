@@ -21,7 +21,7 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: "0"
 
@@ -98,7 +98,7 @@ jobs:
     needs: [create-release]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Python Environment
         uses: ./.github/actions/setup-python-env
@@ -118,7 +118,7 @@ jobs:
     needs: [create-release]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Python Environment
         uses: ./.github/actions/setup-python-env
@@ -137,7 +137,7 @@ jobs:
       artifact-dir: ${{ steps.build.outputs.artifact-dir }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Python Environment
         uses: ./.github/actions/setup-python-env
@@ -170,7 +170,7 @@ jobs:
       options: --user root
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         run: |
@@ -221,7 +221,7 @@ jobs:
     needs: [create-release, build-ubuntu, build-arch]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: "0"
 
