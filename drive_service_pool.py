@@ -24,11 +24,10 @@ Write safety:
 import logging
 import threading
 import weakref
-
 from collections.abc import Callable
 
-from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 log = logging.getLogger(__name__)
 
@@ -132,9 +131,7 @@ class DriveServicePool:
                     if hasattr(svc, "_http") and svc._http:
                         svc._http.close()
                 except Exception as exc:
-                    log.debug(
-                        "DriveServicePool: Error closing HTTP connection: %s", exc
-                    )
+                    log.debug("DriveServicePool: Error closing HTTP connection: %s", exc)
             self._all_services.clear()
         log.info("DriveServicePool: Disposed all service instances.")
 

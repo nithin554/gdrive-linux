@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 
 # --- OAuth 2.0 Client Configuration ---
 # Both CLIENT_ID and CLIENT_SECRET are injected from GitHub repository secrets
@@ -11,9 +11,7 @@ CLIENT_ID = os.environ.get("GDRIVE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GDRIVE_CLIENT_SECRET", "")
 
 # --- Paths ---
-_CONFIG_HOME = os.environ.get(
-    "XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config")
-)
+_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config"))
 _APP_CONFIG_DIR = os.path.join(_CONFIG_HOME, "gdrive-linux")
 
 TOKEN_FILE = os.path.join(_APP_CONFIG_DIR, "token.json")
@@ -21,9 +19,7 @@ MAPPING_FILE = os.path.join(_APP_CONFIG_DIR, "sync_mapping.json")
 SETTINGS_FILE = os.path.join(_APP_CONFIG_DIR, "settings.json")
 
 # --- Cache directory ---
-_CACHE_HOME = os.environ.get(
-    "XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")
-)
+_CACHE_HOME = os.environ.get("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache"))
 FUSE_CACHE_DIR = os.path.join(_CACHE_HOME, "gdrive-linux", "fuse")
 
 # --- Local disk cache settings ---
