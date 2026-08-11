@@ -6,25 +6,24 @@ Google Drive as a pure streaming network drive — zero local storage, reads
 stream from the Drive API, writes upload on close.
 """
 
+import logging
 import os
 import sys
-import time
-import logging
 import threading
-
-from PyQt6.QtWidgets import QApplication, QMessageBox
+import time
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 import config
-from config import REMOTE_SYNC_INTERVAL_SECONDS
 from auth import authenticate_google_drive, get_user_email
-from sync_manager import SyncManager
+from config import REMOTE_SYNC_INTERVAL_SECONDS
 from drive_service_pool import DriveServicePool
 from fuse_drive import DriveFS
-from sync_threads import RemoteSyncThread
 from gui_elements import SettingsWindow, SystemTrayIcon
+from sync_manager import SyncManager
+from sync_threads import RemoteSyncThread
 
 
 def _ensure_fuse_library() -> None:
@@ -153,9 +152,7 @@ class SyncApp(QApplication):
         if user_email:
             mount_dir_name = f"Google Drive ({user_email})"
         else:
-            logging.warning(
-                "Could not fetch user email. Falling back to 'Google Drive'."
-            )
+            logging.warning("Could not fetch user email. Falling back to 'Google Drive'.")
             mount_dir_name = "Google Drive"
         config.FUSE_MOUNT_POINT = os.path.join(os.path.expanduser("~"), mount_dir_name)
         config.LOCAL_SYNC_FOLDER = config.FUSE_MOUNT_POINT
@@ -268,9 +265,7 @@ class SyncApp(QApplication):
                 "FUSE mount timed out after 5 seconds — %s is not a mount point.",
                 mount_point,
             )
-            self._on_tray_message(
-                "FUSE mount is taking unusually long. Check that libfuse2 is installed."
-            )
+            self._on_tray_message("FUSE mount is taking unusually long. Check that libfuse2 is installed.")
             return False
 
         logging.info("FUSE filesystem mounted at %s (verified).", mount_point)
@@ -302,10 +297,7 @@ class SyncApp(QApplication):
                 return
 
             # If busy, try lazy unmount
-            if (
-                "busy" in result.stderr.lower()
-                or "device or resource busy" in result.stderr.lower()
-            ):
+            if "busy" in result.stderr.lower() or "device or resource busy" in result.stderr.lower():
                 logging.warning(
                     "Standard unmount failed (%s). Trying lazy unmount...",
                     result.stderr.strip(),
@@ -317,13 +309,9 @@ class SyncApp(QApplication):
                     timeout=10,
                 )
                 if result.returncode == 0:
-                    logging.info(
-                        "FUSE filesystem lazily unmounted from %s.", mount_point
-                    )
+                    logging.info("FUSE filesystem lazily unmounted from %s.", mount_point)
                 else:
-                    logging.warning(
-                        "Lazy unmount also failed: %s", result.stderr.strip()
-                    )
+                    logging.warning("Lazy unmount also failed: %s", result.stderr.strip())
             else:
                 logging.warning(
                     "fusermount -u returned %d: %s",
@@ -332,8 +320,7 @@ class SyncApp(QApplication):
                 )
         except FileNotFoundError:
             logging.warning(
-                "fusermount not found; cannot unmount FUSE cleanly. "
-                "The mount will be cleaned up on process exit."
+                "fusermount not found; cannot unmount FUSE cleanly. The mount will be cleaned up on process exit."
             )
         except Exception as e:
             logging.error("Error unmounting FUSE: %s", e)
@@ -355,40 +342,29 @@ class SyncApp(QApplication):
         # 2. Create the thread-local service pool for parallel reads.
         # Each FUSE read thread gets its own Drive service instance with an
         # independent HTTP connection, eliminating lock contention.
-        self._service_pool = DriveServicePool(
-            get_credentials=lambda: authenticate_google_drive()
-        )
+        self._service_pool = DriveServicePool(get_credentials=lambda: authenticate_google_drive())
 
         # 3. Initialize SyncManager with the pool
-        self.sync_manager = SyncManager(
-            self.drive_service, service_pool=self._service_pool
-        )
+        self.sync_manager = SyncManager(self.drive_service, service_pool=self._service_pool)
 
         # 4. Check if mapping is stale (e.g., from a previous sync folder)
         if self.sync_manager.is_mapping_for_other_folder():
             logging.warning(
-                "Mapping references a different path than %s. "
-                "Re-initializing with fresh mapping.",
+                "Mapping references a different path than %s. Re-initializing with fresh mapping.",
                 config.FUSE_MOUNT_POINT,
             )
             self.sync_manager.initial_sync_from_drive()
         elif not self.sync_manager.last_change_token:
             self.sync_manager.initial_sync_from_drive()
         else:
-            logging.info(
-                "Skipping initial sync. last_change_token found. "
-                "Will check for remote changes."
-            )
+            logging.info("Skipping initial sync. last_change_token found. Will check for remote changes.")
 
         # 5. Mount FUSE filesystem
         self._on_tray_message("Mounting Google Drive...")
         if not self._mount_fuse():
-            logging.error(
-                "FUSE mount failed. Sync cannot proceed without the virtual filesystem."
-            )
+            logging.error("FUSE mount failed. Sync cannot proceed without the virtual filesystem.")
             self._on_tray_message(
-                f"Failed to mount FUSE at {config.FUSE_MOUNT_POINT}. "
-                "Check that libfuse2 is installed."
+                f"Failed to mount FUSE at {config.FUSE_MOUNT_POINT}. Check that libfuse2 is installed."
             )
             return
 
@@ -462,7 +438,7 @@ class SyncApp(QApplication):
         """
         logging.warning("FUSE notification: %s", msg)
         if self.tray_icon:
-            from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+            from PyQt6.QtCore import Q_ARG, QMetaObject, Qt
 
             QMetaObject.invokeMethod(
                 self.tray_icon,
@@ -483,9 +459,7 @@ class SyncApp(QApplication):
         if self.sync_manager:
             logging.info("Manual sync triggered.")
             self._on_tray_message("Manual sync started...")
-            threading.Thread(
-                target=self.sync_manager.sync_from_remote, daemon=True
-            ).start()
+            threading.Thread(target=self.sync_manager.sync_from_remote, daemon=True).start()
             self._on_tray_message("Manual sync initiated.")
         else:
             self._on_tray_message("Sync manager not initialized.")

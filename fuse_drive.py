@@ -14,30 +14,29 @@ Local file structure:
   FUSE_MOUNT_POINT/   (virtual — served by FUSE, nothing on disk)
 """
 
-import os
-import io
-import time
 import errno
+import io
 import logging
+import os
 import threading
+import time
 
-from fuse import Operations, FuseOSError
+from fuse import FuseOSError, Operations
 
 import config
 from config import (
-    FUSE_CACHE_DIR,
     CACHE_CHUNK_SIZE,
-    READAHEAD_WINDOW_CHUNKS,
+    FUSE_CACHE_DIR,
     MAX_CONCURRENT_FETCHES,
     PREFETCH_TRIGGER_THRESHOLD,
+    READAHEAD_WINDOW_CHUNKS,
 )
-
 from disk_cache import (
+    CacheCleanupThread,
     get_chunk,
     has_chunk,
-    put_chunk,
     invalidate_file,
-    CacheCleanupThread,
+    put_chunk,
 )
 
 log = logging.getLogger(__name__)
@@ -84,21 +83,15 @@ _GOOGLE_DOCS_MIMES: set[str] = {
 
 # Default export MIME types for Google Workspace files.
 _GOOGLE_DOCS_EXPORT_FORMATS: dict[str, str] = {
-    "application/vnd.google-apps.document": (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ),
-    "application/vnd.google-apps.spreadsheet": (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    ),
+    "application/vnd.google-apps.document": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "application/vnd.google-apps.spreadsheet": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
     "application/vnd.google-apps.presentation": (
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     ),
     "application/vnd.google-apps.drawing": "image/png",
     "application/vnd.google-apps.script": "application/vnd.google-apps.script+json",
     "application/vnd.google-apps.form": "application/zip",
-    "application/vnd.google-apps.fusiontable": (
-        "application/vnd.google-apps.fusiontable+json"
-    ),
+    "application/vnd.google-apps.fusiontable": ("application/vnd.google-apps.fusiontable+json"),
     "application/vnd.google-apps.jam": "application/pdf",
     "application/vnd.google-apps.map": "application/vnd.google-apps.map+json",
     "application/vnd.google-apps.site": "text/plain",
@@ -137,10 +130,7 @@ def _stream_from_drive(
 
     # Use a per-thread service from the pool if available — this is the
     # key to parallel reads since each thread gets its own HTTP connection.
-    if service_pool is not None:
-        svc = service_pool.get()
-    else:
-        svc = drive_service
+    svc = service_pool.get() if service_pool is not None else drive_service
     if svc is None:
         svc = drive_service
 
@@ -209,9 +199,9 @@ def _stream_from_drive(
             if resp.status in (200, 206):
                 buf.write(content)
             else:
-                raise IOError(f"HTTP {resp.status}: {resp.reason}")
+                raise OSError(f"HTTP {resp.status}: {resp.reason}")
         else:
-            raise IOError(f"HTTP {resp.status}: {resp.reason}")
+            raise OSError(f"HTTP {resp.status}: {resp.reason}")
     else:
         # No Range header — download the full file
         downloader = MediaIoBaseDownload(buf, request)
@@ -312,18 +302,14 @@ class DriveFS(Operations):
 
     def _info(self, path: str) -> dict | None:
         """Return the mapping dict for *path*, or None."""
-        assert config.LOCAL_SYNC_FOLDER is not None, (
-            "Sync folder must be set before FUSE operations"
-        )
+        assert config.LOCAL_SYNC_FOLDER is not None, "Sync folder must be set before FUSE operations"
         full = os.path.join(config.LOCAL_SYNC_FOLDER, path.lstrip("/"))
         with self.sm._mapping_lock:
             return self.sm.local_file_info.get(full)
 
     def _full_path(self, path: str) -> str:
         """Convert a FUSE path (relative to mount) to an absolute local path."""
-        assert config.LOCAL_SYNC_FOLDER is not None, (
-            "Sync folder must be set before FUSE operations"
-        )
+        assert config.LOCAL_SYNC_FOLDER is not None, "Sync folder must be set before FUSE operations"
         return os.path.join(config.LOCAL_SYNC_FOLDER, path.lstrip("/"))
 
     # ---- Filesystem API ----
@@ -557,9 +543,7 @@ class DriveFS(Operations):
         self._fetch_semaphore.acquire()
 
         try:
-            result = self._read_with_readahead(
-                path, drive_id, file_size, chunk_index, chunk_offset, size
-            )
+            result = self._read_with_readahead(path, drive_id, file_size, chunk_index, chunk_offset, size)
             if len(result) == 0:
                 log.info(
                     "Read '%s' offset=%d size=%d -> 0 bytes (EOF or past EOF)",
@@ -763,13 +747,10 @@ class DriveFS(Operations):
         if window_offset + window_size > file_size:
             window_size = file_size - window_offset
             # Recalculate end_chunk for cache population
-            end_chunk = (
-                start_chunk + (window_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
-            )
+            end_chunk = start_chunk + (window_size + CACHE_CHUNK_SIZE - 1) // CACHE_CHUNK_SIZE
 
         log.debug(
-            "Cache MISS '%s' chunk=%d — fetching %d-chunk window "
-            "[chunks %d-%d, %d bytes at offset %d]",
+            "Cache MISS '%s' chunk=%d — fetching %d-chunk window [chunks %d-%d, %d bytes at offset %d]",
             path,
             chunk_index,
             end_chunk - start_chunk,
@@ -818,8 +799,7 @@ class DriveFS(Operations):
 
         elapsed = time.time() - fetch_start
         log.info(
-            "Fetched %d-chunk window for '%s' in %.2fs (%.1f MB, %.1f MB/s). "
-            "Servicing chunk %d at offset %d.",
+            "Fetched %d-chunk window for '%s' in %.2fs (%.1f MB, %.1f MB/s). Servicing chunk %d at offset %d.",
             end_chunk - start_chunk,
             path,
             elapsed,
@@ -872,8 +852,8 @@ class DriveFS(Operations):
             raise FuseOSError(errno.EIO)
 
         # Create on Drive with empty content first
-        from googleapiclient.http import MediaIoBaseUpload
         from googleapiclient.errors import HttpError
+        from googleapiclient.http import MediaIoBaseUpload
 
         body = {"name": name, "parents": [parent_id]}
         media = MediaIoBaseUpload(io.BytesIO(b""), mimetype="application/octet-stream")
@@ -1004,9 +984,7 @@ class DriveFS(Operations):
                         # Update mapping with new size (thread-safe)
                         with self.sm._mapping_lock:
                             if full in self.sm.local_file_info:
-                                self.sm.local_file_info[full]["size"] = updated.get(
-                                    "size", "0"
-                                )
+                                self.sm.local_file_info[full]["size"] = updated.get("size", "0")
                                 self.sm.local_file_info[full]["mimeType"] = updated.get(
                                     "mimeType", "application/octet-stream"
                                 )

@@ -1,27 +1,28 @@
-import os
 import logging
-import sys
+import os
 import subprocess
+import sys
 import threading
+from contextlib import suppress
 
-from PyQt6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-    QMessageBox,
-    QSystemTrayIcon,
-    QMenu,
-    QCheckBox,
-)
-from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSystemTrayIcon,
+    QVBoxLayout,
+    QWidget,
+)
 
 import config
-from config import TOKEN_FILE, SCOPES, CACHE_MAX_SIZE_MB, MAPPING_FILE, SETTINGS_FILE
 from auth import get_user_email, logout_google_account, reauthenticate_google_drive
-from autostart import is_autostart_enabled, enable_autostart, disable_autostart
+from autostart import disable_autostart, enable_autostart, is_autostart_enabled
+from config import CACHE_MAX_SIZE_MB, MAPPING_FILE, SCOPES, SETTINGS_FILE, TOKEN_FILE
 
 
 class SettingsWindow(QMainWindow):
@@ -88,8 +89,7 @@ class SettingsWindow(QMainWindow):
         reset_header = QLabel("<b>Reset Application:</b>")
         layout.addWidget(reset_header)
         reset_desc = QLabel(
-            "Clears cache, mapping, settings, and logs you out. "
-            "Use this if the app gets into a broken state."
+            "Clears cache, mapping, settings, and logs you out. Use this if the app gets into a broken state."
         )
         reset_desc.setWordWrap(True)
         reset_desc.setStyleSheet("color: gray; font-size: 11px;")
@@ -139,8 +139,7 @@ class SettingsWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "Cache Cleared",
-                    f"Cleared {freed_mb:.1f} MB of cached data.\n"
-                    "Files will be re-fetched from Google Drive as needed.",
+                    f"Cleared {freed_mb:.1f} MB of cached data.\nFiles will be re-fetched from Google Drive as needed.",
                 )
                 logging.info("Cache cleared manually (%d bytes freed).", freed)
             except Exception as e:
@@ -183,8 +182,7 @@ class SettingsWindow(QMainWindow):
         confirm = QMessageBox.warning(
             self,
             "Are you sure?",
-            "This cannot be undone. All cached data and settings will be lost.\n\n"
-            "Proceed with reset?",
+            "This cannot be undone. All cached data and settings will be lost.\n\nProceed with reset?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -312,18 +310,12 @@ class SettingsWindow(QMainWindow):
                 if user_email:
                     self.google_account_label.setText(f"Logged in as: {user_email}")
                 elif creds.valid or creds.refresh_token:
-                    self.google_account_label.setText(
-                        "Logged in (token exists, email not fetched)"
-                    )
+                    self.google_account_label.setText("Logged in (token exists, email not fetched)")
                 else:
-                    self.google_account_label.setText(
-                        "Token expired/invalid. Please restart to re-authenticate."
-                    )
+                    self.google_account_label.setText("Token expired/invalid. Please restart to re-authenticate.")
             except Exception as e:
                 logging.error("Error updating Google account status: %s", e)
-                self.google_account_label.setText(
-                    "Token invalid. Please restart to re-authenticate."
-                )
+                self.google_account_label.setText("Token invalid. Please restart to re-authenticate.")
         else:
             self.google_account_label.setText("Not logged in")
 
@@ -340,10 +332,8 @@ class SettingsWindow(QMainWindow):
             return  # Widget not created yet
         is_logged_in = os.path.exists(TOKEN_FILE)
         # Safely disconnect all existing connections before reconnecting
-        try:
+        with suppress(TypeError):
             self.auth_btn.clicked.disconnect()
-        except TypeError:
-            pass  # No existing connections — this is fine
         if is_logged_in:
             self.auth_btn.setText("Log Out")
             self.auth_btn.clicked.connect(self._logout_google_account)
@@ -385,9 +375,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         # Refresh cache display every 5 seconds while menu is open
         self._cache_refresh_timer = None
 
-        open_folder_action = QAction(
-            f"Open {os.path.basename(config.FUSE_MOUNT_POINT)}", self
-        )
+        open_folder_action = QAction(f"Open {os.path.basename(config.FUSE_MOUNT_POINT)}", self)
         open_folder_action.triggered.connect(self._open_sync_folder)
         menu.addAction(open_folder_action)
 
@@ -532,10 +520,7 @@ class SystemTrayIcon(QSystemTrayIcon):
                     "Could not open mount point: %s",
                     "; ".join(errors),
                 )
-                self._show_tray_message(
-                    "Could not open the folder. "
-                    "Try opening this path manually:\n" + mount
-                )
+                self._show_tray_message("Could not open the folder. Try opening this path manually:\n" + mount)
         except Exception as e:
             logging.error("Could not open mount point: %s", e)
             self._show_tray_message(f"Error opening folder: {e}")

@@ -4,12 +4,10 @@ Creates/removes a .desktop file in ~/.config/autostart/ so the
 application starts automatically on login.
 """
 
-import os
 import logging
+import os
 
-AUTOSTART_DIR = os.path.join(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "autostart"
-)
+AUTOSTART_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "autostart")
 DESKTOP_FILE = os.path.join(AUTOSTART_DIR, "gdrive-linux.desktop")
 
 DESKTOP_CONTENT = """[Desktop Entry]

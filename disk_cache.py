@@ -9,16 +9,16 @@ The cache is optional — if a chunk is missing (evicted or never fetched),
 the caller falls through to a network request.
 """
 
-import os
-import time
 import logging
+import os
 import threading
+import time
 
 from config import (
-    CACHE_DIR,
-    CACHE_MAX_SIZE_MB,
-    CACHE_MAX_AGE_SECONDS,
     CACHE_CLEANUP_INTERVAL,
+    CACHE_DIR,
+    CACHE_MAX_AGE_SECONDS,
+    CACHE_MAX_SIZE_MB,
 )
 
 log = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ def get_cache_size() -> int:
     """Return total cache size in bytes (from index, no disk scan)."""
     total = 0
     with _index_lock:
-        for drive_id, chunks in _index.items():
+        for chunks in _index.values():
             for info in chunks.values():
                 total += info.get("size", 0)
     return total
@@ -158,11 +158,7 @@ def clear_cache() -> int:
     import shutil
 
     with _index_lock:
-        freed = sum(
-            info.get("size", 0)
-            for chunks in _index.values()
-            for info in chunks.values()
-        )
+        freed = sum(info.get("size", 0) for chunks in _index.values() for info in chunks.values())
         _index.clear()
         _save_index()
 
@@ -222,9 +218,7 @@ class CacheCleanupThread(threading.Thread):
 
         with _index_lock:
             # Collect all chunks with their metadata
-            entries: list[
-                tuple[str, int, float, int]
-            ] = []  # (drive_id, chunk_idx, mtime, size)
+            entries: list[tuple[str, int, float, int]] = []  # (drive_id, chunk_idx, mtime, size)
             for drive_id, chunks in list(_index.items()):
                 for chunk_idx, info in list(chunks.items()):
                     mtime = info.get("mtime", 0)
@@ -256,7 +250,7 @@ class CacheCleanupThread(threading.Thread):
                     remaining.append((drive_id, chunk_idx, mtime, size))
             remaining.sort(key=lambda e: e[2])
 
-            for drive_id, chunk_idx, mtime, size in remaining:
+            for drive_id, chunk_idx, _mtime, size in remaining:
                 _evict_chunk(drive_id, chunk_idx)
                 total_size -= size
                 if total_size <= max_bytes:

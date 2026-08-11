@@ -7,7 +7,6 @@ import pytest
 
 from drive_service_pool import DriveServicePool
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -77,7 +76,7 @@ class TestDriveServicePool:
                 t.join()
 
             assert len(services) == 3
-            assert len(set(id(s) for s in services)) == 3
+            assert len({id(s) for s in services}) == 3
 
     def test_get_returns_none_when_no_creds(self):
         """Without credentials, get() should return None."""

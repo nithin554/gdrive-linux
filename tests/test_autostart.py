@@ -1,13 +1,12 @@
 """Tests for the autostart module."""
 
 import os
-import tempfile
 import shutil
+import tempfile
 
 import pytest
 
 import autostart
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

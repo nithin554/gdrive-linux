@@ -1,15 +1,14 @@
 """Tests for the authentication module."""
 
-import os
 import json
-import tempfile
+import os
 import shutil
-from unittest.mock import patch, MagicMock
+import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import auth
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -51,9 +50,7 @@ class TestAuthenticate:
         result = auth.authenticate_google_drive()
         assert result is None
 
-    def test_returns_creds_when_token_exists_and_valid(
-        self, monkeypatch, temp_token_dir
-    ):
+    def test_returns_creds_when_token_exists_and_valid(self, monkeypatch, temp_token_dir):
         """When a valid token exists, should return credentials without OAuth flow."""
         _, token_path = temp_token_dir
         monkeypatch.setattr(auth, "CLIENT_ID", "test-client-id")
@@ -85,13 +82,15 @@ class TestAuthenticate:
         mock_creds.refresh_token = "test_refresh"
         mock_creds.to_json.return_value = json.dumps({"token": "refreshed"})
 
-        with patch(
-            "google.oauth2.credentials.Credentials.from_authorized_user_file",
-            return_value=mock_creds,
+        with (
+            patch(
+                "google.oauth2.credentials.Credentials.from_authorized_user_file",
+                return_value=mock_creds,
+            ),
+            patch("google.auth.transport.requests.Request"),
         ):
-            with patch("google.auth.transport.requests.Request"):
-                result = auth.authenticate_google_drive()
-                assert result is not None
+            result = auth.authenticate_google_drive()
+            assert result is not None
 
     def test_saves_token_after_new_auth(self, monkeypatch, temp_token_dir):
         """After successful OAuth, the token should be saved to disk."""
@@ -178,9 +177,7 @@ class TestGetUserEmail:
         """get_user_email should return None if the API call fails."""
         mock_creds = MagicMock()
 
-        with patch(
-            "googleapiclient.discovery.build", side_effect=Exception("API error")
-        ):
+        with patch("googleapiclient.discovery.build", side_effect=Exception("API error")):
             email = auth.get_user_email(mock_creds)
             assert email is None
 

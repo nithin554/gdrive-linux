@@ -1,17 +1,16 @@
 """Tests for the disk cache module."""
 
-import os
 import json
-import time
+import os
 import shutil
 import tempfile
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
 
 import disk_cache
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -347,13 +346,8 @@ class TestConcurrency:
 
         def worker(worker_id):
             for i in range(20):
-                disk_cache.put_chunk(
-                    f"drive_{worker_id}", i, f"data_{worker_id}_{i}".encode()
-                )
-            return all(
-                disk_cache.get_chunk(f"drive_{worker_id}", i) is not None
-                for i in range(20)
-            )
+                disk_cache.put_chunk(f"drive_{worker_id}", i, f"data_{worker_id}_{i}".encode())
+            return all(disk_cache.get_chunk(f"drive_{worker_id}", i) is not None for i in range(20))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             futures = [executor.submit(worker, i) for i in range(8)]
